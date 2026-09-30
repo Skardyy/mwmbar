@@ -8,6 +8,4 @@ protocol WMSource: AnyObject {
   func start()
 
   func switchWorkspace(id: String, monitorId: String)
-
-  func focusWindow(id: String)
 }

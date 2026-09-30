@@ -2,9 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Tracks which windows are currently minimized or belong to an app-hidden
-/// application. State is seeded once and kept in sync via AX observers plus
-/// NSWorkspace hide/unhide notifications. Sources compose this into their
-/// refresh loop; the bar itself never observes AX.
+/// application, keyed by CGWindowID as a String. Kept in sync via per-app AX
+/// observers plus NSWorkspace hide/unhide notifications.
 @MainActor
 final class HiddenTracker {
   private(set) var hiddenIds: Set<String> = []
@@ -19,23 +18,29 @@ final class HiddenTracker {
     running = true
     reseed()
     let nc = NSWorkspace.shared.notificationCenter
+    // observers registered with queue: .main run on the main thread, so
+    // assumeIsolated is sound and avoids spawning a Task per notification.
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
       ) { [weak self] n in
-        Task { @MainActor in self?.handleAppLaunched(n) }
+        let pid = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+          .processIdentifier
+        MainActor.assumeIsolated { self?.handleAppEvent(pid: pid) }
       })
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
       ) { [weak self] n in
-        Task { @MainActor in self?.handleAppTerminated(n) }
+        let pid = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+          .processIdentifier
+        MainActor.assumeIsolated { self?.handleAppTerminated(pid: pid) }
       })
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didHideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        Task { @MainActor in
+        MainActor.assumeIsolated {
           self?.reseed()
           self?.onChange?()
         }
@@ -44,7 +49,7 @@ final class HiddenTracker {
       nc.addObserver(
         forName: NSWorkspace.didUnhideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        Task { @MainActor in
+        MainActor.assumeIsolated {
           self?.reseed()
           self?.onChange?()
         }
@@ -86,20 +91,16 @@ final class HiddenTracker {
     if next != hiddenIds { hiddenIds = next }
   }
 
-  private func handleAppLaunched(_ n: Notification) {
-    guard
-      let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-    else { return }
-    installObserver(for: app.processIdentifier)
+  private func handleAppEvent(pid: pid_t?) {
+    guard let pid else { return }
+    installObserver(for: pid)
     reseed()
     onChange?()
   }
 
-  private func handleAppTerminated(_ n: Notification) {
-    guard
-      let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-    else { return }
-    if let obs = observers.removeValue(forKey: app.processIdentifier) {
+  private func handleAppTerminated(pid: pid_t?) {
+    guard let pid else { return }
+    if let obs = observers.removeValue(forKey: pid) {
       CFRunLoopRemoveSource(
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
     }
@@ -149,6 +150,8 @@ final class HiddenTracker {
   }
 }
 
+// private SPI: the public AX api exposes no way to map an AXUIElement back to
+// a CGWindowID, which we need to correlate with aerospace's window ids.
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(
   _ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>

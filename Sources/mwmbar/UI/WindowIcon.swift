@@ -13,6 +13,6 @@ struct WindowIcon: View {
       }
     }
     .frame(width: 16, height: 16)
-    .opacity(window.isHidden ? 0.5 : (isFocused ? 1.0 : 0.75))
+    .opacity(window.isHidden ? 0.4 : (isFocused ? 1.0 : 0.75))
   }
 }

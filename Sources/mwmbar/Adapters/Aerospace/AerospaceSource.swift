@@ -17,7 +17,9 @@ final class AerospaceSource: WMSource {
         Log.source.warning("aerospace cmd socket connect failed: \(String(describing: err))")
         return
       }
-      self?.refresh()
+      // socket callback fires on the socket's serial queue; hop to MainActor
+      // before touching bar state.
+      Task { @MainActor in await self?.refresh() }
     }
     events.connect { [weak self] err in
       if let err {
@@ -26,7 +28,7 @@ final class AerospaceSource: WMSource {
       }
       guard let self else { return }
       self.events.onFrame = { [weak self] _ in
-        Task { @MainActor in self?.refresh() }
+        Task { @MainActor in await self?.refresh() }
       }
       self.events.send(args: [
         "subscribe", "focus-changed",
@@ -49,69 +51,42 @@ final class AerospaceSource: WMSource {
     }
   }
 
-  func focusWindow(id: String) {
-    cmd.send(args: ["focus", "--window-id", id]) { r in
-      if case .failure(let e) = r {
-        Log.source.warning("aerospace focus \(id) failed: \(String(describing: e))")
-      }
-    }
+  private func refresh() async {
+    async let monitorsF = fetch(
+      [AerospaceMonitorRow].self,
+      args: [
+        "list-monitors", "--json",
+        "--format", "%{monitor-id}%{monitor-name}",
+      ])
+    async let workspacesF = fetch(
+      [AerospaceWorkspaceRow].self,
+      args: [
+        "list-workspaces", "--all", "--json",
+        "--format",
+        "%{workspace}%{monitor-id}%{workspace-is-visible}%{workspace-root-container-layout}",
+      ])
+    async let windowsF = fetch(
+      [AerospaceWindowRow].self,
+      args: [
+        "list-windows", "--all", "--json",
+        "--format", "%{window-id}%{app-name}%{app-bundle-id}%{workspace}%{monitor-id}",
+      ])
+    async let focusedF = fetch(
+      [AerospaceFocusedRow].self,
+      args: [
+        "list-windows", "--focused", "--json",
+        "--format", "%{window-id}",
+      ])
+    let monitors = await monitorsF
+    let workspaces = await workspacesF
+    let windows = await windowsF
+    let focused = await focusedF
+    apply(monitors: monitors, workspaces: workspaces, windows: windows, focused: focused)
   }
 
-  private func refresh() {
-    let group = DispatchGroup()
-    var monitors: [AerospaceMonitorRow] = []
-    var workspaces: [AerospaceWorkspaceRow] = []
-    var windows: [AerospaceWindowRow] = []
-    var focused: [AerospaceFocusedRow] = []
-
-    group.enter()
-    cmd.send(args: [
-      "list-monitors", "--json",
-      "--format", "%{monitor-id}%{monitor-name}",
-    ]) { r in
-      monitors = Self.decode(r)
-      group.leave()
-    }
-    group.enter()
-    cmd.send(args: [
-      "list-workspaces", "--all", "--json",
-      "--format",
-      "%{workspace}%{monitor-id}%{workspace-is-visible}%{workspace-root-container-layout}",
-    ]) { r in
-      workspaces = Self.decode(r)
-      group.leave()
-    }
-    group.enter()
-    cmd.send(args: [
-      "list-windows", "--all", "--json",
-      "--format", "%{window-id}%{app-name}%{app-bundle-id}%{workspace}%{monitor-id}",
-    ]) { r in
-      windows = Self.decode(r)
-      group.leave()
-    }
-    group.enter()
-    cmd.send(args: [
-      "list-windows", "--focused", "--json",
-      "--format", "%{window-id}",
-    ]) { r in
-      focused = Self.decode(r)
-      group.leave()
-    }
-
-    group.notify(queue: .main) { [weak self] in
-      guard let self else { return }
-      self.apply(
-        monitors: monitors, workspaces: workspaces,
-        windows: windows, focused: focused)
-    }
-  }
-
-  private static func decode<T: Decodable>(_ r: Result<AerospaceResponse, Error>) -> [T] {
-    switch r {
-    case .failure(let e):
-      Log.source.warning("aerospace request failed: \(String(describing: e))")
-      return []
-    case .success(let resp):
+  private func fetch<T: Decodable & Sendable>(_ type: [T].Type, args: [String]) async -> [T] {
+    do {
+      let resp = try await cmd.send(args: args)
       guard resp.exitCode == 0 else {
         Log.source.warning("aerospace non-zero exit \(resp.exitCode) stderr=\(resp.stderr)")
         return []
@@ -120,12 +95,10 @@ final class AerospaceSource: WMSource {
         Log.source.warning("aerospace stdout not utf8")
         return []
       }
-      do {
-        return try JSONDecoder().decode([T].self, from: data)
-      } catch {
-        Log.source.warning("aerospace decode failed: \(String(describing: error))")
-        return []
-      }
+      return try JSONDecoder().decode([T].self, from: data)
+    } catch {
+      Log.source.warning("aerospace fetch failed: \(String(describing: error))")
+      return []
     }
   }
 
@@ -147,8 +120,7 @@ final class AerospaceSource: WMSource {
     var workspaceKey: [String: (monitorId: Int, wsIndex: Int)] = [:]
     for ws in workspaces {
       let workspace = Workspace(
-        id: ws.id, isVisible: ws.isVisible,
-        preserveOrder: ws.rootLayout.contains("accordion"),
+        id: ws.id,
         windows: [])
       guard var monitor = monitorById[ws.monitorId] else {
         Log.source.warning("workspace \(ws.id) references unknown monitor \(ws.monitorId)")
@@ -170,7 +142,7 @@ final class AerospaceSource: WMSource {
         continue
       }
       monitor.workspaces[key.wsIndex].windows.append(
-        Window(id: String(w.id), bundleId: w.bundleId, name: w.appName, isHidden: false))
+        Window(id: String(w.id), bundleId: w.bundleId, name: w.appName))
       monitorById[key.monitorId] = monitor
     }
 

@@ -7,38 +7,38 @@ import Network
 ///                                        "windowId":null,"workspace":null}]
 ///   response:  [u32 LE len][utf-8 JSON: {"exitCode","stdout","stderr",...}]
 ///   subscribe: normal request; server keeps pushing framed ServerEvent JSON
-struct AerospaceResponse: Decodable {
+struct AerospaceResponse: Decodable, Sendable {
   let exitCode: Int
   let stdout: String
   let stderr: String
 }
 
-struct AerospaceServerEvent: Decodable {
+struct AerospaceServerEvent: Decodable, Sendable {
   let event: String
   private enum CodingKeys: String, CodingKey { case event = "_event" }
 }
 
-final class AerospaceSocket {
+/// @unchecked because the serial queue is the sync primitive for every mutable
+/// field; the compiler cannot see that invariant.
+final class AerospaceSocket: @unchecked Sendable {
   private let path: String
   private let queue = DispatchQueue(label: "aerospace.socket")
   private var connection: NWConnection?
   private var buffer = Data()
   private var handshakeDone = false
-  private var pendingResponses: [(Result<AerospaceResponse, Error>) -> Void] = []
+  private var pendingResponses: [@Sendable (Result<AerospaceResponse, Error>) -> Void] = []
 
   /// when set, framed payloads bypass pendingResponses and go here (subscribe mode)
-  var onFrame: ((Data) -> Void)?
-  var onError: ((Error) -> Void)?
+  var onFrame: (@Sendable (Data) -> Void)?
+  var onError: (@Sendable (Error) -> Void)?
 
   init(user: String = NSUserName()) {
     self.path = "/tmp/bobko.aerospace-\(user).sock"
   }
 
-  func connect(then: @escaping (Error?) -> Void) {
+  func connect(then: @escaping @Sendable (Error?) -> Void) {
     let endpoint = NWEndpoint.unix(path: path)
-    // .tcp is the network.framework preset for a plain byte-stream; combined
-    // with a unix endpoint it gives an AF_UNIX SOCK_STREAM connection.
-    let params = NWParameters.tcp
+    let params = NWParameters.tcp  // no unix-stream preset exists; .tcp gives byte-stream semantics
     let conn = NWConnection(to: endpoint, using: params)
     connection = conn
     conn.stateUpdateHandler = { [weak self] state in
@@ -59,8 +59,16 @@ final class AerospaceSocket {
     conn.start(queue: queue)
   }
 
+  func send(args: [String]) async throws -> AerospaceResponse {
+    try await withCheckedThrowingContinuation { cont in
+      send(args: args) { result in
+        cont.resume(with: result)
+      }
+    }
+  }
+
   /// responses are matched to requests by FIFO order, not by id
-  func send(args: [String], reply: @escaping (Result<AerospaceResponse, Error>) -> Void) {
+  func send(args: [String], reply: @escaping @Sendable (Result<AerospaceResponse, Error>) -> Void) {
     guard let conn = connection else {
       reply(
         .failure(
@@ -106,9 +114,12 @@ final class AerospaceSocket {
         continue
       }
       guard buffer.count >= 4 else { return }
-      let len = buffer.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+      let len = buffer.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).littleEndian }
       guard buffer.count >= 4 + Int(len) else { return }
-      let payload = buffer.subdata(in: 4..<(4 + Int(len)))
+      // removeFirst advances buffer.startIndex, so slice indices must be
+      // anchored on startIndex rather than 0.
+      let base = buffer.startIndex
+      let payload = Data(buffer[(base + 4)..<(base + 4 + Int(len))])
       buffer.removeFirst(4 + Int(len))
       if let onFrame {
         onFrame(payload)

@@ -9,13 +9,13 @@ run:
 	swift run
 
 fmt:
-	swift-format format --in-place --recursive $(SRC)
+	nix develop --command swift-format format --in-place --recursive $(SRC)
 
 fmt-check:
-	swift-format lint --recursive $(SRC)
+	nix develop --command swift-format lint --recursive $(SRC)
 
 lint:
-	swiftlint lint --strict $(SRC)
+	nix develop --command swiftlint lint --strict $(SRC)
 
 clean:
 	swift package clean

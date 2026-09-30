@@ -1,8 +1,8 @@
 import Foundation
 
-struct Window: Identifiable, Hashable {
+struct Window: Identifiable, Hashable, Sendable {
   let id: String
   let bundleId: String
   let name: String
-  var isHidden: Bool
+  var isHidden: Bool = false
 }

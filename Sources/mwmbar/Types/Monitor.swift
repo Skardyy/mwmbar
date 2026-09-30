@@ -1,6 +1,6 @@
 import Foundation
 
-struct Monitor: Identifiable, Hashable {
+struct Monitor: Identifiable, Hashable, Sendable {
   let id: String
   let nsScreenName: String
   var workspaces: [Workspace]

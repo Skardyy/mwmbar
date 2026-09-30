@@ -1,9 +1,6 @@
 import Foundation
 
-struct Workspace: Identifiable, Hashable {
+struct Workspace: Identifiable, Hashable, Sendable {
   let id: String
-  var isVisible: Bool
-  /// true for stack/accordion layouts where spatial sorting would misrepresent z-order
-  var preserveOrder: Bool
   var windows: [Window]
 }
