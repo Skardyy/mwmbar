@@ -5,6 +5,8 @@ import SwiftUI
 final class BarWindow {
   private let window: NSPanel
   private let hosting: NSHostingController<BarWindowRoot>
+  private var screen: NSScreen
+  nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
 
   init(
     monitorId: String, screen: NSScreen, state: Bar,
@@ -16,6 +18,7 @@ final class BarWindow {
       onSwitchWorkspace: onSwitchWorkspace)
     hosting = NSHostingController(rootView: root)
     hosting.sizingOptions = [.preferredContentSize]
+    self.screen = screen
 
     let panel = NSPanel(
       contentRect: .zero,
@@ -32,19 +35,51 @@ final class BarWindow {
     panel.ignoresMouseEvents = false
     window = panel
 
-    position(on: screen)
+    hosting.view.postsFrameChangedNotifications = true
+    frameObserver = NotificationCenter.default.addObserver(
+      forName: NSView.frameDidChangeNotification, object: hosting.view, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.reposition() }
+    }
+
+    reposition()
     panel.orderFrontRegardless()
   }
 
-  func position(on screen: NSScreen) {
+  deinit {
+    if let frameObserver {
+      NotificationCenter.default.removeObserver(frameObserver)
+    }
+  }
+
+  func reposition() {
+    position(on: screen)
+  }
+
+  func setScreen(_ screen: NSScreen) {
+    self.screen = screen
+    reposition()
+  }
+
+  private func position(on screen: NSScreen) {
     let full = screen.frame
-    let contentSize = hosting.preferredContentSize
-    let w = max(80, contentSize.width)
-    let h = max(22, contentSize.height)
+    // sizingOptions drives w/h from SwiftUI; we only place the origin. before
+    // first layout window.frame.size is zero, and frameDidChange will call us
+    // back with a real size.
+    let size = window.frame.size
+    let w = size.width
+    let h = size.height
+    if w <= 0 || h <= 0 { return }
     let menubarH = full.height - screen.visibleFrame.height
-    let x = full.origin.x + (full.width - w) / 2
+    let hasNotch = menubarH > 32
+    let x: CGFloat
+    if hasNotch {
+      x = full.origin.x + full.width / 2 + 110
+    } else {
+      x = full.origin.x + (full.width - w) / 2
+    }
     let y = full.origin.y + full.height - menubarH + (menubarH - h) / 2
-    window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+    window.setFrameOrigin(NSPoint(x: x, y: y))
   }
 
   func close() {

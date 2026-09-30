@@ -77,29 +77,30 @@ final class AerospaceSource: WMSource {
         "list-windows", "--focused", "--json",
         "--format", "%{window-id}",
       ])
-    let monitors = await monitorsF
-    let workspaces = await workspacesF
-    let windows = await windowsF
-    let focused = await focusedF
-    apply(monitors: monitors, workspaces: workspaces, windows: windows, focused: focused)
+    do {
+      let monitors = try await monitorsF
+      let workspaces = try await workspacesF
+      let windows = try await windowsF
+      let focused = try await focusedF
+      apply(monitors: monitors, workspaces: workspaces, windows: windows, focused: focused)
+    } catch {
+      // partial failure: keep prior bar state instead of wiping it.
+      Log.source.warning("aerospace refresh aborted: \(String(describing: error))")
+    }
   }
 
-  private func fetch<T: Decodable & Sendable>(_ type: [T].Type, args: [String]) async -> [T] {
-    do {
-      let resp = try await cmd.send(args: args)
-      guard resp.exitCode == 0 else {
-        Log.source.warning("aerospace non-zero exit \(resp.exitCode) stderr=\(resp.stderr)")
-        return []
-      }
-      guard let data = resp.stdout.data(using: .utf8) else {
-        Log.source.warning("aerospace stdout not utf8")
-        return []
-      }
-      return try JSONDecoder().decode([T].self, from: data)
-    } catch {
-      Log.source.warning("aerospace fetch failed: \(String(describing: error))")
-      return []
+  private func fetch<T: Decodable & Sendable>(
+    _ type: [T].Type, args: [String]
+  ) async throws -> [T] {
+    let resp = try await cmd.send(args: args)
+    guard resp.exitCode == 0 else {
+      throw AerospaceSocketError(
+        message: "non-zero exit \(resp.exitCode) stderr=\(resp.stderr)")
     }
+    guard let data = resp.stdout.data(using: .utf8) else {
+      throw AerospaceSocketError(message: "stdout not utf8")
+    }
+    return try JSONDecoder().decode([T].self, from: data)
   }
 
   private func apply(

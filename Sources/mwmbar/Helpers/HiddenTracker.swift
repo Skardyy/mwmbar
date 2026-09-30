@@ -12,6 +12,8 @@ final class HiddenTracker {
   private var running = false
   private var observers: [pid_t: AXObserver] = [:]
   private var appWatchers: [NSObjectProtocol] = []
+  private var loggedFailedPids: Set<pid_t> = []
+  private var reseedPending = false
 
   func start() {
     if running { return }
@@ -40,19 +42,13 @@ final class HiddenTracker {
       nc.addObserver(
         forName: NSWorkspace.didHideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        MainActor.assumeIsolated {
-          self?.reseed()
-          self?.onChange?()
-        }
+        MainActor.assumeIsolated { self?.scheduleReseed() }
       })
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didUnhideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        MainActor.assumeIsolated {
-          self?.reseed()
-          self?.onChange?()
-        }
+        MainActor.assumeIsolated { self?.scheduleReseed() }
       })
   }
 
@@ -70,32 +66,57 @@ final class HiddenTracker {
     hiddenIds.removeAll()
   }
 
-  private func reseed() {
+  private func scheduleReseed() {
+    if reseedPending { return }
+    reseedPending = true
+    // AX bursts (opening many windows) can fire dozens of notifications back
+    // to back. 50ms coalesces without visibly lagging the bar.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.reseedPending = false
+        let changed = self.reseed()
+        if changed { self.onChange?() }
+      }
+    }
+  }
+
+  @discardableResult
+  private func reseed() -> Bool {
     var next: Set<String> = []
     for app in NSWorkspace.shared.runningApplications
     where app.activationPolicy == .regular {
       installObserver(for: app.processIdentifier)
       let axApp = AXUIElementCreateApplication(app.processIdentifier)
       var value: CFTypeRef?
-      guard
-        AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
-          == .success,
-        let windows = value as? [AXUIElement]
-      else { continue }
+      let err = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
+      guard err == .success, let windows = value as? [AXUIElement] else {
+        if err != .success, !loggedFailedPids.contains(app.processIdentifier) {
+          loggedFailedPids.insert(app.processIdentifier)
+          let bid = app.bundleIdentifier ?? "?"
+          let pid = app.processIdentifier
+          Log.bar.warning(
+            "AX kAXWindows failed pid=\(pid) err=\(err.rawValue) app=\(bid). check permission.")
+        }
+        continue
+      }
       let appHidden = app.isHidden
       for w in windows {
         guard let id = windowId(w) else { continue }
         if appHidden || isMinimized(w) { next.insert(String(id)) }
       }
     }
-    if next != hiddenIds { hiddenIds = next }
+    if next != hiddenIds {
+      hiddenIds = next
+      return true
+    }
+    return false
   }
 
   private func handleAppEvent(pid: pid_t?) {
     guard let pid else { return }
     installObserver(for: pid)
-    reseed()
-    onChange?()
+    scheduleReseed()
   }
 
   private func handleAppTerminated(pid: pid_t?) {
@@ -104,8 +125,8 @@ final class HiddenTracker {
       CFRunLoopRemoveSource(
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
     }
-    reseed()
-    onChange?()
+    loggedFailedPids.remove(pid)
+    scheduleReseed()
   }
 
   private func installObserver(for pid: pid_t) {
@@ -114,13 +135,17 @@ final class HiddenTracker {
     let callback: AXObserverCallback = { _, _, _, refcon in
       guard let refcon else { return }
       let tracker = Unmanaged<HiddenTracker>.fromOpaque(refcon).takeUnretainedValue()
-      Task { @MainActor in
-        tracker.reseed()
-        tracker.onChange?()
-      }
+      Task { @MainActor in tracker.scheduleReseed() }
     }
     let err = AXObserverCreate(pid, callback, &observer)
-    guard err == .success, let observer else { return }
+    guard err == .success, let observer else {
+      if !loggedFailedPids.contains(pid) {
+        loggedFailedPids.insert(pid)
+        Log.bar.warning(
+          "AXObserverCreate pid=\(pid) err=\(err.rawValue). check Accessibility permission.")
+      }
+      return
+    }
     let axApp = AXUIElementCreateApplication(pid)
     let refcon = Unmanaged.passUnretained(self).toOpaque()
     for notif in [

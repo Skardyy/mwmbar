@@ -9,7 +9,10 @@ struct BarView: View {
     let monitor = state.monitors.first { $0.id == monitorId }
     HStack(spacing: 8) {
       if let monitor {
-        ForEach(monitor.workspaces) { ws in
+        let visible = monitor.workspaces.filter {
+          !$0.windows.isEmpty || $0.id == monitor.focusedWorkspaceId
+        }
+        ForEach(visible) { ws in
           WorkspacePill(
             workspace: ws,
             isActive: ws.id == monitor.focusedWorkspaceId,

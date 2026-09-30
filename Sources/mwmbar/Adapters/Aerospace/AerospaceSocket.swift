@@ -18,6 +18,11 @@ struct AerospaceServerEvent: Decodable, Sendable {
   private enum CodingKeys: String, CodingKey { case event = "_event" }
 }
 
+struct AerospaceSocketError: Error, CustomStringConvertible {
+  let message: String
+  var description: String { message }
+}
+
 /// @unchecked because the serial queue is the sync primitive for every mutable
 /// field; the compiler cannot see that invariant.
 final class AerospaceSocket: @unchecked Sendable {
@@ -27,10 +32,18 @@ final class AerospaceSocket: @unchecked Sendable {
   private var buffer = Data()
   private var handshakeDone = false
   private var pendingResponses: [@Sendable (Result<AerospaceResponse, Error>) -> Void] = []
+  private var _onFrame: (@Sendable (Data) -> Void)?
+  private var _onError: (@Sendable (Error) -> Void)?
+  private var connectFired = false
 
-  /// when set, framed payloads bypass pendingResponses and go here (subscribe mode)
-  var onFrame: (@Sendable (Data) -> Void)?
-  var onError: (@Sendable (Error) -> Void)?
+  var onFrame: (@Sendable (Data) -> Void)? {
+    get { queue.sync { _onFrame } }
+    set { queue.async { self._onFrame = newValue } }
+  }
+  var onError: (@Sendable (Error) -> Void)? {
+    get { queue.sync { _onError } }
+    set { queue.async { self._onError = newValue } }
+  }
 
   init(user: String = NSUserName()) {
     self.path = "/tmp/bobko.aerospace-\(user).sock"
@@ -38,26 +51,54 @@ final class AerospaceSocket: @unchecked Sendable {
 
   func connect(then: @escaping @Sendable (Error?) -> Void) {
     let endpoint = NWEndpoint.unix(path: path)
-    let params = NWParameters.tcp  // no unix-stream preset exists; .tcp gives byte-stream semantics
+    let params = NWParameters.tcp
     let conn = NWConnection(to: endpoint, using: params)
     connection = conn
+    queue.async {
+      self.pendingConnect = then
+      self.connectFired = false
+    }
     conn.stateUpdateHandler = { [weak self] state in
       guard let self else { return }
       switch state {
       case .ready:
         var v: UInt32 = 1
         let bytes = Data(bytes: &v, count: 4)
-        conn.send(content: bytes, completion: .contentProcessed { _ in })
-        self.receive()
-        then(nil)
+        conn.send(
+          content: bytes,
+          completion: .contentProcessed { err in
+            if let err {
+              Log.socket.error("handshake write failed: \(String(describing: err))")
+              self.fireConnect(err)
+              return
+            }
+            self.receive()
+            self.fireConnect(nil)
+          })
       case .failed(let err):
-        then(err)
-        self.onError?(err)
+        Log.socket.error("connection failed: \(String(describing: err))")
+        self.fireConnect(err)
+        self.failAllPending(err)
+        self._onError?(err)
+      case .cancelled:
+        let err = AerospaceSocketError(message: "connection cancelled")
+        self.failAllPending(err)
       default: break
       }
     }
     conn.start(queue: queue)
   }
+
+  private func fireConnect(_ err: Error?) {
+    queue.async {
+      if self.connectFired { return }
+      self.connectFired = true
+      self.pendingConnect?(err)
+      self.pendingConnect = nil
+    }
+  }
+
+  private var pendingConnect: (@Sendable (Error?) -> Void)?
 
   func send(args: [String]) async throws -> AerospaceResponse {
     try await withCheckedThrowingContinuation { cont in
@@ -67,14 +108,10 @@ final class AerospaceSocket: @unchecked Sendable {
     }
   }
 
-  /// responses are matched to requests by FIFO order, not by id
+  /// responses matched to requests by FIFO order, not by id
   func send(args: [String], reply: @escaping @Sendable (Result<AerospaceResponse, Error>) -> Void) {
     guard let conn = connection else {
-      reply(
-        .failure(
-          NSError(
-            domain: "aerospace", code: 0,
-            userInfo: [NSLocalizedDescriptionKey: "not connected"])))
+      reply(.failure(AerospaceSocketError(message: "not connected")))
       return
     }
     guard let argsJson = try? JSONSerialization.data(withJSONObject: args) else {
@@ -86,7 +123,21 @@ final class AerospaceSocket: @unchecked Sendable {
     var len = UInt32(payload.count).littleEndian
     let header = Data(bytes: &len, count: 4)
     queue.async { self.pendingResponses.append(reply) }
-    conn.send(content: header + payload, completion: .contentProcessed { _ in })
+    conn.send(
+      content: header + payload,
+      completion: .contentProcessed { [weak self] err in
+        guard let err else { return }
+        Log.socket.error("send write failed: \(String(describing: err))")
+        self?.failAllPending(err)
+      })
+  }
+
+  private func failAllPending(_ err: Error) {
+    queue.async {
+      let pending = self.pendingResponses
+      self.pendingResponses.removeAll()
+      for cb in pending { cb(.failure(err)) }
+    }
   }
 
   private func receive() {
@@ -95,7 +146,9 @@ final class AerospaceSocket: @unchecked Sendable {
 
   private func handle(data: Data?, _: NWConnection.ContentContext?, isDone: Bool, err: NWError?) {
     if let err {
-      onError?(err)
+      Log.socket.error("receive failed: \(String(describing: err))")
+      failAllPending(err)
+      _onError?(err)
       return
     }
     if let data {
@@ -121,8 +174,8 @@ final class AerospaceSocket: @unchecked Sendable {
       let base = buffer.startIndex
       let payload = Data(buffer[(base + 4)..<(base + 4 + Int(len))])
       buffer.removeFirst(4 + Int(len))
-      if let onFrame {
-        onFrame(payload)
+      if let cb = _onFrame {
+        cb(payload)
       } else if let cb = pendingResponses.first {
         pendingResponses.removeFirst()
         do {
