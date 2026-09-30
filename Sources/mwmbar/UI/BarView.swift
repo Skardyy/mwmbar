@@ -4,10 +4,11 @@ struct BarView: View {
   let monitorId: String
   @Environment(Bar.self) private var state
   let onSwitchWorkspace: (String, String) -> Void
+  let onRestoreWindow: (String) -> Void
 
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
-    HStack(spacing: 8) {
+    HStack(spacing: 6) {
       if let monitor {
         let visible = monitor.workspaces.filter {
           !$0.windows.isEmpty || $0.id == monitor.focusedWorkspaceId
@@ -17,20 +18,32 @@ struct BarView: View {
             workspace: ws,
             isActive: ws.id == monitor.focusedWorkspaceId,
             focusedWindowId: state.focusedWindowId,
-            onTap: { onSwitchWorkspace(ws.id, monitorId) }
+            onTap: { onSwitchWorkspace(ws.id, monitorId) },
+            onIconClick: { window in
+              if window.isHidden {
+                onRestoreWindow(window.id)
+              } else {
+                onSwitchWorkspace(ws.id, monitorId)
+              }
+            }
           )
+          .transition(
+            .asymmetric(
+              insertion: .scale(scale: 0.7).combined(with: .opacity),
+              removal: .scale(scale: 0.7).combined(with: .opacity)))
         }
       }
     }
     .padding(.horizontal, 6)
-    .frame(height: 22)
+    .frame(height: 24)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
         .fill(.ultraThinMaterial)
         .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+          RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
+            .stroke(BarConfig.containerStroke, lineWidth: 0.5)
         )
     )
+    .animation(BarConfig.transition, value: monitor?.workspaces ?? [])
   }
 }

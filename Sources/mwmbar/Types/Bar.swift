@@ -20,6 +20,10 @@ final class Bar {
     tracker.start()
   }
 
+  func restoreWindow(id: String) {
+    tracker.restore(id: id)
+  }
+
   /// sources call this whenever their view of the world changes. the bar
   /// filters against compositor truth and only republishes if the resulting
   /// tree actually differs from the last render.
@@ -29,6 +33,12 @@ final class Bar {
 
   private func applyIfChanged(monitors: [Monitor], focusedWindowId: String?) {
     if monitors == self.monitors && focusedWindowId == self.focusedWindowId { return }
+    for m in monitors {
+      let ids = m.workspaces.map {
+        "\($0.id)(\($0.windows.map { $0.isHidden ? "\($0.id)*" : $0.id }.joined(separator: ",")))"
+      }.joined(separator: ",")
+      Log.bar.debug("commit monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") \(ids)")
+    }
     self.monitors = monitors
     self.focusedWindowId = focusedWindowId
   }

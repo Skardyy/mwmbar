@@ -7,6 +7,11 @@ import Foundation
 /// when the compositor's own state changes, the invalidator reevaluates the
 /// last submitted tree so a closed window disappears immediately even if the
 /// WM has not caught up yet.
+///
+/// also caches every window's last known (monitorId, workspaceId) so windows
+/// the WM stops reporting (aerospace drops minimized windows from
+/// list-windows --all after a while) can be reinjected as hidden entries as
+/// long as the compositor still says they exist.
 @MainActor
 final class Invalidator {
   private let tracker: CompositorTracker
@@ -14,6 +19,7 @@ final class Invalidator {
   private var lastMonitors: [Monitor] = []
   private var lastFocus: String?
   private var haveSubmission = false
+  private var placement: [String: (monitorId: String, workspaceId: String)] = [:]
 
   init(tracker: CompositorTracker, commit: @escaping ([Monitor], String?) -> Void) {
     self.tracker = tracker
@@ -25,24 +31,46 @@ final class Invalidator {
     lastMonitors = monitors
     lastFocus = focusedWindowId
     haveSubmission = true
+    updatePlacement(from: monitors)
     reevaluate()
+  }
+
+  private func updatePlacement(from monitors: [Monitor]) {
+    for monitor in monitors {
+      for ws in monitor.workspaces {
+        for w in ws.windows {
+          placement[w.id] = (monitor.id, ws.id)
+        }
+      }
+    }
   }
 
   private func reevaluate() {
     guard haveSubmission else { return }
-    let filtered = lastMonitors.map { filter($0) }
+    var reinjectByWs: [String: [Window]] = [:]
+    let known = Set(lastMonitors.flatMap { $0.workspaces.flatMap { $0.windows.map(\.id) } })
+    for (id, info) in tracker.live where !known.contains(id) {
+      guard let place = placement[id] else { continue }
+      let name = info.name ?? ""
+      let bid = info.bundleId ?? ""
+      let win = Window(id: id, bundleId: bid, name: name, isHidden: tracker.hidden.contains(id))
+      reinjectByWs["\(place.monitorId)/\(place.workspaceId)", default: []].append(win)
+    }
+
+    let filtered = lastMonitors.map { monitor in
+      var out = monitor
+      out.workspaces = monitor.workspaces.map { ws in
+        var w = ws
+        w.windows = ws.windows.compactMap(overlay)
+        if let extras = reinjectByWs["\(monitor.id)/\(ws.id)"] {
+          w.windows.append(contentsOf: extras)
+        }
+        return w
+      }
+      return out
+    }
     let focus = lastFocus.flatMap { tracker.live[$0] != nil ? $0 : nil }
     commit(filtered, focus)
-  }
-
-  private func filter(_ monitor: Monitor) -> Monitor {
-    var out = monitor
-    out.workspaces = monitor.workspaces.map { ws in
-      var w = ws
-      w.windows = ws.windows.compactMap(overlay)
-      return w
-    }
-    return out
   }
 
   private func overlay(_ window: Window) -> Window? {

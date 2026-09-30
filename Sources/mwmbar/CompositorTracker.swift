@@ -22,6 +22,7 @@ final class CompositorTracker {
   private var observers: [pid_t: AXObserver] = [:]
   private var appWatchers: [NSObjectProtocol] = []
   private var loggedFailedPids: Set<pid_t> = []
+  private var pendingPids: Set<pid_t> = []
   private var scanPending = false
 
   func start() {
@@ -60,6 +61,36 @@ final class CompositorTracker {
       })
   }
 
+  /// unminimize the window by walking the owning pid's AX windows to find it.
+  /// no cache. one shot per click; a few ms.
+  func restore(id: String) {
+    guard let info = live[id] else {
+      Log.bar.warning("restore \(id): unknown to compositor. bar and tracker desynced.")
+      return
+    }
+    guard let widInt = UInt32(id) else {
+      Log.bar.error("restore \(id): id not numeric.")
+      return
+    }
+    let target = CGWindowID(widInt)
+    let axApp = AXUIElementCreateApplication(info.pid)
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
+    guard err == .success, let windows = value as? [AXUIElement] else {
+      Log.bar.warning("restore \(id): AX kAXWindows failed pid=\(info.pid) err=\(err.rawValue).")
+      return
+    }
+    for w in windows {
+      var wid: CGWindowID = 0
+      if _AXUIElementGetWindow(w, &wid) == .success, wid == target {
+        AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, false as CFTypeRef)
+        AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+        return
+      }
+    }
+    Log.bar.warning("restore \(id): window not found in pid=\(info.pid) AX list.")
+  }
+
   func stop() {
     if !running { return }
     running = false
@@ -75,16 +106,69 @@ final class CompositorTracker {
     hidden.removeAll()
   }
 
-  private func scheduleRescan() {
+  /// pass nil pid for a full rescan (startup / app join / app terminate).
+  /// pass a pid for a targeted rescan of just that app's windows.
+  private func scheduleRescan(pid: pid_t? = nil) {
+    if let pid { pendingPids.insert(pid) } else { pendingPids.removeAll() }
     if scanPending { return }
     scanPending = true
+    let fullScan = pid == nil
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
         self.scanPending = false
-        self.rescan()
-        self.onChange?()
+        let prevLive = self.live
+        let prevHidden = self.hidden
+        if fullScan || self.pendingPids.isEmpty {
+          self.rescan()
+        } else {
+          let pids = self.pendingPids
+          self.pendingPids.removeAll()
+          for p in pids { self.rescanPid(p) }
+        }
+        if self.live != prevLive || self.hidden != prevHidden {
+          self.onChange?()
+        }
       }
+    }
+  }
+
+  /// rescan a single app's windows and merge into the live/hidden sets.
+  /// used for AX destroy/create/miniaturize bursts so we avoid iterating
+  /// every process when only one app changed.
+  private func rescanPid(_ pid: pid_t) {
+    guard
+      let app = NSRunningApplication(processIdentifier: pid),
+      app.activationPolicy == .regular
+    else {
+      live = live.filter { $0.value.pid != pid }
+      hidden = hidden.filter { live[$0] != nil }
+      return
+    }
+    let axApp = AXUIElementCreateApplication(pid)
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
+    var seen: Set<String> = []
+    if err == .success, let windows = value as? [AXUIElement] {
+      let bundleId = app.bundleIdentifier
+      let appHidden = app.isHidden
+      for w in windows {
+        guard let id = windowId(w) else { continue }
+        let sid = String(id)
+        seen.insert(sid)
+        live[sid] = WindowInfo(pid: pid, bundleId: bundleId, name: title(w))
+        if appHidden || isMinimized(w) { hidden.insert(sid) } else { hidden.remove(sid) }
+      }
+    } else if !loggedFailedPids.contains(pid), err != .success {
+      loggedFailedPids.insert(pid)
+      let bid = app.bundleIdentifier ?? "?"
+      Log.bar.warning(
+        "AX kAXWindows failed pid=\(pid) err=\(err.rawValue) app=\(bid). check permission.")
+    }
+    // drop any windows we previously attributed to this pid that no longer exist
+    for (sid, info) in live where info.pid == pid && !seen.contains(sid) {
+      live.removeValue(forKey: sid)
+      hidden.remove(sid)
     }
   }
 
@@ -126,7 +210,7 @@ final class CompositorTracker {
       return
     }
     installObserver(for: pid)
-    scheduleRescan()
+    scheduleRescan(pid: pid)
   }
 
   private func handleAppTerminated(pid: pid_t?) {
@@ -139,16 +223,23 @@ final class CompositorTracker {
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
     }
     loggedFailedPids.remove(pid)
-    scheduleRescan()
+    scheduleRescan(pid: pid)
   }
 
   private func installObserver(for pid: pid_t) {
     if observers[pid] != nil { return }
     var observer: AXObserver?
-    let callback: AXObserverCallback = { _, _, _, refcon in
+    let callback: AXObserverCallback = { _, element, notif, refcon in
       guard let refcon else { return }
       let tracker = Unmanaged<CompositorTracker>.fromOpaque(refcon).takeUnretainedValue()
-      Task { @MainActor in tracker.scheduleRescan() }
+      let name = notif as String
+      var elementPid: pid_t = 0
+      let pidOk = AXUIElementGetPid(element, &elementPid) == .success
+      let scanPid = pidOk ? elementPid : nil
+      Task { @MainActor in
+        Log.bar.debug("AX event \(name) pid=\(scanPid.map(String.init) ?? "?")")
+        tracker.scheduleRescan(pid: scanPid)
+      }
     }
     let err = AXObserverCreate(pid, callback, &observer)
     guard err == .success, let observer else {
@@ -164,7 +255,6 @@ final class CompositorTracker {
     for notif in [
       kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
       kAXWindowCreatedNotification, kAXUIElementDestroyedNotification,
-      kAXTitleChangedNotification,
     ] {
       let addErr = AXObserverAddNotification(observer, axApp, notif as CFString, refcon)
       if addErr != .success {
@@ -177,12 +267,15 @@ final class CompositorTracker {
     observers[pid] = observer
   }
 
-  private func windowId(_ el: AXUIElement) -> CGWindowID? {
+}
+
+extension CompositorTracker {
+  fileprivate func windowId(_ el: AXUIElement) -> CGWindowID? {
     var wid: CGWindowID = 0
     return _AXUIElementGetWindow(el, &wid) == .success ? wid : nil
   }
 
-  private func title(_ el: AXUIElement) -> String? {
+  fileprivate func title(_ el: AXUIElement) -> String? {
     var value: CFTypeRef?
     guard
       AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &value) == .success
@@ -190,7 +283,7 @@ final class CompositorTracker {
     return value as? String
   }
 
-  private func isMinimized(_ el: AXUIElement) -> Bool {
+  fileprivate func isMinimized(_ el: AXUIElement) -> Bool {
     var value: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(el, kAXMinimizedAttribute as CFString, &value)
     if err != .success {

@@ -6,12 +6,14 @@ final class BarController {
   let state = Bar()
   var source: (any WMSource)?
   private var windowsByMonitor: [String: BarWindow] = [:]
+  private let cpu = CpuStatItem()
 
   func start() {
     state.start()
     let src = AerospaceSource()
     source = src
     src.start(bar: state)
+    cpu.start()
     syncWindows()
   }
 
@@ -33,6 +35,9 @@ final class BarController {
         monitorId: monitor.id, screen: screen, state: state,
         onSwitchWorkspace: { [weak self] wsId, monId in
           self?.source?.switchWorkspace(id: wsId, monitorId: monId)
+        },
+        onRestoreWindow: { [weak self] id in
+          self?.state.restoreWindow(id: id)
         })
     }
     withObservationTracking { [self] in

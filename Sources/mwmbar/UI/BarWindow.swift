@@ -10,12 +10,14 @@ final class BarWindow {
 
   init(
     monitorId: String, screen: NSScreen, state: Bar,
-    onSwitchWorkspace: @escaping (String, String) -> Void
+    onSwitchWorkspace: @escaping (String, String) -> Void,
+    onRestoreWindow: @escaping (String) -> Void
   ) {
     let root = BarWindowRoot(
       monitorId: monitorId,
       state: state,
-      onSwitchWorkspace: onSwitchWorkspace)
+      onSwitchWorkspace: onSwitchWorkspace,
+      onRestoreWindow: onRestoreWindow)
     hosting = NSHostingController(rootView: root)
     hosting.sizingOptions = [.preferredContentSize]
     self.screen = screen
@@ -85,15 +87,21 @@ final class BarWindow {
   func close() {
     window.close()
   }
+
 }
 
 struct BarWindowRoot: View {
   let monitorId: String
   let state: Bar
   let onSwitchWorkspace: (String, String) -> Void
+  let onRestoreWindow: (String) -> Void
 
   var body: some View {
-    BarView(monitorId: monitorId, onSwitchWorkspace: onSwitchWorkspace)
-      .environment(state)
+    BarView(
+      monitorId: monitorId,
+      onSwitchWorkspace: onSwitchWorkspace,
+      onRestoreWindow: onRestoreWindow
+    )
+    .environment(state)
   }
 }
