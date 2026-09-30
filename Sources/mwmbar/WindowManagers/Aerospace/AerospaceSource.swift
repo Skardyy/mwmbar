@@ -2,23 +2,17 @@ import Foundation
 
 @MainActor
 final class AerospaceSource: WMSource {
-  let state: Bar
-
+  private weak var bar: Bar?
   private let cmd = AerospaceSocket()
   private let events = AerospaceSocket()
 
-  init(state: Bar) {
-    self.state = state
-  }
-
-  func start() {
+  func start(bar: Bar) {
+    self.bar = bar
     cmd.connect { [weak self] err in
       if let err {
         Log.source.warning("aerospace cmd socket connect failed: \(String(describing: err))")
         return
       }
-      // socket callback fires on the socket's serial queue; hop to MainActor
-      // before touching bar state.
       Task { @MainActor in await self?.refresh() }
     }
     events.connect { [weak self] err in
@@ -28,8 +22,14 @@ final class AerospaceSource: WMSource {
       }
       guard let self else { return }
       self.events.onFrame = { [weak self] payload in
-        let kind = (try? JSONDecoder().decode(AerospaceServerEvent.self, from: payload))?.event
-        Log.source.debug("event \(kind ?? "?")")
+        do {
+          let event = try JSONDecoder().decode(AerospaceServerEvent.self, from: payload)
+          Log.source.debug("event \(event.event)")
+        } catch {
+          let prefix = String(data: payload.prefix(120), encoding: .utf8) ?? "<bin>"
+          Log.source.error(
+            "aerospace event decode failed: \(error). prefix=\(prefix)")
+        }
         Task { @MainActor in await self?.refresh() }
       }
       self.events.send(args: ["subscribe", "--all"]) { r in
@@ -81,7 +81,6 @@ final class AerospaceSource: WMSource {
       let focused = try await focusedF
       apply(monitors: monitors, workspaces: workspaces, windows: windows, focused: focused)
     } catch {
-      // partial failure: keep prior bar state instead of wiping it.
       Log.source.warning("aerospace refresh aborted: \(String(describing: error))")
     }
   }
@@ -102,12 +101,15 @@ final class AerospaceSource: WMSource {
 
   /// aerospace returns exit 2 "No window is focused" when the visible
   /// workspace is empty; treat that as an empty result rather than a failure.
+  /// non-utf8 stdout still throws because that means aerospace itself is broken.
   private func fetchOptional<T: Decodable & Sendable>(
     _ type: [T].Type, args: [String]
   ) async throws -> [T] {
     let resp = try await cmd.send(args: args)
     if resp.exitCode != 0 { return [] }
-    guard let data = resp.stdout.data(using: .utf8) else { return [] }
+    guard let data = resp.stdout.data(using: .utf8) else {
+      throw AerospaceSocketError(message: "stdout not utf8 (aerospace corrupted?)")
+    }
     return try JSONDecoder().decode([T].self, from: data)
   }
 
@@ -128,9 +130,7 @@ final class AerospaceSource: WMSource {
 
     var workspaceKey: [String: (monitorId: Int, wsIndex: Int)] = [:]
     for ws in workspaces {
-      let workspace = Workspace(
-        id: ws.id,
-        windows: [])
+      let workspace = Workspace(id: ws.id, windows: [])
       guard var monitor = monitorById[ws.monitorId] else {
         Log.source.warning("workspace \(ws.id) references unknown monitor \(ws.monitorId)")
         continue
@@ -162,6 +162,6 @@ final class AerospaceSource: WMSource {
       Log.source.debug(
         "monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") ws=[\(ids)]")
     }
-    state.setAll(monitors: finalMonitors, focusedWindowId: focusedWindowId)
+    bar?.tryUpdate(monitors: finalMonitors, focusedWindowId: focusedWindowId)
   }
 }

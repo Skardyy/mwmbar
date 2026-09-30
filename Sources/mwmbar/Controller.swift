@@ -8,9 +8,10 @@ final class BarController {
   private var windowsByMonitor: [String: BarWindow] = [:]
 
   func start() {
-    let src = AerospaceSource(state: state)
+    state.start()
+    let src = AerospaceSource()
     source = src
-    src.start()
+    src.start(bar: state)
     syncWindows()
   }
 
@@ -34,7 +35,6 @@ final class BarController {
           self?.source?.switchWorkspace(id: wsId, monitorId: monId)
         })
     }
-    // withObservationTracking fires once per change; re-arm to catch the next
     withObservationTracking { [self] in
       _ = state.monitors.map { $0.id }
     } onChange: { [weak self] in

@@ -2,7 +2,7 @@ import Foundation
 
 struct Window: Identifiable, Hashable, Sendable {
   let id: String
-  let bundleId: String
-  let name: String
+  var bundleId: String
+  var name: String
   var isHidden: Bool = false
 }

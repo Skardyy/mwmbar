@@ -1,34 +1,42 @@
 import AppKit
 import ApplicationServices
 
-/// Tracks which windows are currently minimized or belong to an app-hidden
-/// application, keyed by CGWindowID as a String. Kept in sync via per-app AX
-/// observers plus NSWorkspace hide/unhide notifications.
+/// macOS native window lifecycle authority. sits between the WM source and the
+/// bar UI: knows which windows are actually alive right now, their owning pid,
+/// bundle id, and title, and which are hidden or miniaturized. we trust the
+/// compositor over the WM so WM lag (aerospace not yet noticing a closed
+/// window, for example) does not leak into the UI.
 @MainActor
-final class HiddenTracker {
-  private(set) var hiddenIds: Set<String> = []
+final class CompositorTracker {
+  struct WindowInfo: Equatable, Sendable {
+    let pid: pid_t
+    let bundleId: String?
+    let name: String?
+  }
+
+  private(set) var live: [String: WindowInfo] = [:]
+  private(set) var hidden: Set<String> = []
   var onChange: (() -> Void)?
 
   private var running = false
   private var observers: [pid_t: AXObserver] = [:]
   private var appWatchers: [NSObjectProtocol] = []
   private var loggedFailedPids: Set<pid_t> = []
-  private var reseedPending = false
+  private var scanPending = false
 
   func start() {
     if running { return }
     running = true
-    reseed()
+    Log.bar.info("CompositorTracker start trusted=\(AXIsProcessTrusted())")
+    rescan()
     let nc = NSWorkspace.shared.notificationCenter
-    // observers registered with queue: .main run on the main thread, so
-    // assumeIsolated is sound and avoids spawning a Task per notification.
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
       ) { [weak self] n in
         let pid = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
           .processIdentifier
-        MainActor.assumeIsolated { self?.handleAppEvent(pid: pid) }
+        MainActor.assumeIsolated { self?.handleAppLaunched(pid: pid) }
       })
     appWatchers.append(
       nc.addObserver(
@@ -42,13 +50,13 @@ final class HiddenTracker {
       nc.addObserver(
         forName: NSWorkspace.didHideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        MainActor.assumeIsolated { self?.scheduleReseed() }
+        MainActor.assumeIsolated { self?.scheduleRescan() }
       })
     appWatchers.append(
       nc.addObserver(
         forName: NSWorkspace.didUnhideApplicationNotification, object: nil, queue: .main
       ) { [weak self] _ in
-        MainActor.assumeIsolated { self?.scheduleReseed() }
+        MainActor.assumeIsolated { self?.scheduleRescan() }
       })
   }
 
@@ -63,70 +71,75 @@ final class HiddenTracker {
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
     }
     observers.removeAll()
-    hiddenIds.removeAll()
+    live.removeAll()
+    hidden.removeAll()
   }
 
-  private func scheduleReseed() {
-    if reseedPending { return }
-    reseedPending = true
-    // AX bursts (opening many windows) can fire dozens of notifications back
-    // to back. 50ms coalesces without visibly lagging the bar.
+  private func scheduleRescan() {
+    if scanPending { return }
+    scanPending = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
-        self.reseedPending = false
-        let changed = self.reseed()
-        if changed { self.onChange?() }
+        self.scanPending = false
+        self.rescan()
+        self.onChange?()
       }
     }
   }
 
-  @discardableResult
-  private func reseed() -> Bool {
-    var next: Set<String> = []
+  private func rescan() {
+    var nextLive: [String: WindowInfo] = [:]
+    var nextHidden: Set<String> = []
     for app in NSWorkspace.shared.runningApplications
     where app.activationPolicy == .regular {
-      installObserver(for: app.processIdentifier)
-      let axApp = AXUIElementCreateApplication(app.processIdentifier)
+      let pid = app.processIdentifier
+      installObserver(for: pid)
+      let axApp = AXUIElementCreateApplication(pid)
       var value: CFTypeRef?
       let err = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
       guard err == .success, let windows = value as? [AXUIElement] else {
-        if err != .success, !loggedFailedPids.contains(app.processIdentifier) {
-          loggedFailedPids.insert(app.processIdentifier)
+        if err != .success, !loggedFailedPids.contains(pid) {
+          loggedFailedPids.insert(pid)
           let bid = app.bundleIdentifier ?? "?"
-          let pid = app.processIdentifier
           Log.bar.warning(
             "AX kAXWindows failed pid=\(pid) err=\(err.rawValue) app=\(bid). check permission.")
         }
         continue
       }
+      let bundleId = app.bundleIdentifier
       let appHidden = app.isHidden
       for w in windows {
         guard let id = windowId(w) else { continue }
-        if appHidden || isMinimized(w) { next.insert(String(id)) }
+        let sid = String(id)
+        nextLive[sid] = WindowInfo(pid: pid, bundleId: bundleId, name: title(w))
+        if appHidden || isMinimized(w) { nextHidden.insert(sid) }
       }
     }
-    if next != hiddenIds {
-      hiddenIds = next
-      return true
-    }
-    return false
+    live = nextLive
+    hidden = nextHidden
   }
 
-  private func handleAppEvent(pid: pid_t?) {
-    guard let pid else { return }
+  private func handleAppLaunched(pid: pid_t?) {
+    guard let pid else {
+      Log.bar.error("didLaunchApplication notification missing pid. skipping rescan.")
+      return
+    }
     installObserver(for: pid)
-    scheduleReseed()
+    scheduleRescan()
   }
 
   private func handleAppTerminated(pid: pid_t?) {
-    guard let pid else { return }
+    guard let pid else {
+      Log.bar.error("didTerminateApplication notification missing pid. skipping rescan.")
+      return
+    }
     if let obs = observers.removeValue(forKey: pid) {
       CFRunLoopRemoveSource(
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
     }
     loggedFailedPids.remove(pid)
-    scheduleReseed()
+    scheduleRescan()
   }
 
   private func installObserver(for pid: pid_t) {
@@ -134,8 +147,8 @@ final class HiddenTracker {
     var observer: AXObserver?
     let callback: AXObserverCallback = { _, _, _, refcon in
       guard let refcon else { return }
-      let tracker = Unmanaged<HiddenTracker>.fromOpaque(refcon).takeUnretainedValue()
-      Task { @MainActor in tracker.scheduleReseed() }
+      let tracker = Unmanaged<CompositorTracker>.fromOpaque(refcon).takeUnretainedValue()
+      Task { @MainActor in tracker.scheduleRescan() }
     }
     let err = AXObserverCreate(pid, callback, &observer)
     guard err == .success, let observer else {
@@ -151,8 +164,13 @@ final class HiddenTracker {
     for notif in [
       kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
       kAXWindowCreatedNotification, kAXUIElementDestroyedNotification,
+      kAXTitleChangedNotification,
     ] {
-      AXObserverAddNotification(observer, axApp, notif as CFString, refcon)
+      let addErr = AXObserverAddNotification(observer, axApp, notif as CFString, refcon)
+      if addErr != .success {
+        Log.bar.error(
+          "AXObserverAddNotification failed pid=\(pid) notif=\(notif) err=\(addErr.rawValue).")
+      }
     }
     CFRunLoopAddSource(
       CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
@@ -164,19 +182,28 @@ final class HiddenTracker {
     return _AXUIElementGetWindow(el, &wid) == .success ? wid : nil
   }
 
-  private func isMinimized(_ el: AXUIElement) -> Bool {
+  private func title(_ el: AXUIElement) -> String? {
     var value: CFTypeRef?
     guard
-      AXUIElementCopyAttributeValue(el, kAXMinimizedAttribute as CFString, &value)
-        == .success,
-      let n = value as? NSNumber
-    else { return false }
-    return n.boolValue
+      AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &value) == .success
+    else { return nil }
+    return value as? String
+  }
+
+  private func isMinimized(_ el: AXUIElement) -> Bool {
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(el, kAXMinimizedAttribute as CFString, &value)
+    if err != .success {
+      Log.bar.warning(
+        "AX kAXMinimized failed err=\(err.rawValue). isHidden may be inaccurate.")
+      return false
+    }
+    return (value as? NSNumber)?.boolValue ?? false
   }
 }
 
-// private SPI: the public AX api exposes no way to map an AXUIElement back to
-// a CGWindowID, which we need to correlate with aerospace's window ids.
+// public AX api exposes no way to map an AXUIElement back to a CGWindowID, so
+// we bind the private symbol directly.
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(
   _ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>

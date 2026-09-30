@@ -3,9 +3,9 @@ import Network
 
 /// aerospace wire protocol:
 ///   handshake: [u32 LE 1] both ways
-///   request:   [u32 LE len][utf-8 JSON: {"args":[...],"stdin":"",
+///   request:   [u32 LE len][utf8 JSON: {"args":[...],"stdin":"",
 ///                                        "windowId":null,"workspace":null}]
-///   response:  [u32 LE len][utf-8 JSON: {"exitCode","stdout","stderr",...}]
+///   response:  [u32 LE len][utf8 JSON: {"exitCode","stdout","stderr",...}]
 ///   subscribe: normal request; server keeps pushing framed ServerEvent JSON
 struct AerospaceResponse: Decodable, Sendable {
   let exitCode: Int
@@ -147,7 +147,11 @@ final class AerospaceSocket: @unchecked Sendable {
   }
 
   private func receive() {
-    connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536, completion: handle)
+    guard let conn = connection else {
+      Log.socket.warning("receive on nil connection; read loop stops.")
+      return
+    }
+    conn.receive(minimumIncompleteLength: 1, maximumLength: 65536, completion: handle)
   }
 
   private func handle(data: Data?, _: NWConnection.ContentContext?, isDone: Bool, err: NWError?) {

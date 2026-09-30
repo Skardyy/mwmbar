@@ -7,19 +7,28 @@ final class Bar {
   var monitors: [Monitor] = []
   var focusedWindowId: String?
 
-  func setMonitor(_ monitor: Monitor) {
-    if let i = monitors.firstIndex(where: { $0.id == monitor.id }) {
-      monitors[i] = monitor
-    } else {
-      monitors.append(monitor)
+  @ObservationIgnored private let tracker = CompositorTracker()
+  @ObservationIgnored private var invalidator: Invalidator!
+
+  init() {
+    invalidator = Invalidator(tracker: tracker) { [weak self] monitors, focus in
+      self?.applyIfChanged(monitors: monitors, focusedWindowId: focus)
     }
   }
 
-  func removeMonitor(id: String) {
-    monitors.removeAll { $0.id == id }
+  func start() {
+    tracker.start()
   }
 
-  func setAll(monitors: [Monitor], focusedWindowId: String?) {
+  /// sources call this whenever their view of the world changes. the bar
+  /// filters against compositor truth and only republishes if the resulting
+  /// tree actually differs from the last render.
+  func tryUpdate(monitors: [Monitor], focusedWindowId: String?) {
+    invalidator.tryUpdate(monitors: monitors, focusedWindowId: focusedWindowId)
+  }
+
+  private func applyIfChanged(monitors: [Monitor], focusedWindowId: String?) {
+    if monitors == self.monitors && focusedWindowId == self.focusedWindowId { return }
     self.monitors = monitors
     self.focusedWindowId = focusedWindowId
   }
