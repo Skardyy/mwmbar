@@ -1,14 +1,4 @@
 import AppKit
-import SwiftUI
-
-@main
-struct MwmbarApp: App {
-  @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-
-  var body: some Scene {
-    Settings { EmptyView() }
-  }
-}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,3 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     controller.start()
   }
 }
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()

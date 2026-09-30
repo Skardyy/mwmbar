@@ -122,14 +122,20 @@ final class AerospaceSocket: @unchecked Sendable {
       + Data(#","stdin":"","windowId":null,"workspace":null}"#.utf8)
     var len = UInt32(payload.count).littleEndian
     let header = Data(bytes: &len, count: 4)
-    queue.async { self.pendingResponses.append(reply) }
-    conn.send(
-      content: header + payload,
-      completion: .contentProcessed { [weak self] err in
-        guard let err else { return }
-        Log.socket.error("send write failed: \(String(describing: err))")
-        self?.failAllPending(err)
-      })
+    let frame = header + payload
+    // append + wire write must be one atomic step on the serial queue, or
+    // concurrent senders can reorder writes relative to pendingResponses and
+    // deliver a reply to the wrong caller.
+    queue.async { [self] in
+      pendingResponses.append(reply)
+      conn.send(
+        content: frame,
+        completion: .contentProcessed { [self] err in
+          guard let err else { return }
+          Log.socket.error("send write failed: \(String(describing: err))")
+          failAllPending(err)
+        })
+    }
   }
 
   private func failAllPending(_ err: Error) {

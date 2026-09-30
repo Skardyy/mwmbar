@@ -27,15 +27,12 @@ final class AerospaceSource: WMSource {
         return
       }
       guard let self else { return }
-      self.events.onFrame = { [weak self] _ in
+      self.events.onFrame = { [weak self] payload in
+        let kind = (try? JSONDecoder().decode(AerospaceServerEvent.self, from: payload))?.event
+        Log.source.debug("event \(kind ?? "?")")
         Task { @MainActor in await self?.refresh() }
       }
-      self.events.send(args: [
-        "subscribe", "focus-changed",
-        "focused-workspace-changed",
-        "focused-monitor-changed",
-        "window-detected",
-      ]) { r in
+      self.events.send(args: ["subscribe", "--all"]) { r in
         if case .failure(let e) = r {
           Log.source.warning("aerospace subscribe failed: \(String(describing: e))")
         }
@@ -71,7 +68,7 @@ final class AerospaceSource: WMSource {
         "list-windows", "--all", "--json",
         "--format", "%{window-id}%{app-name}%{app-bundle-id}%{workspace}%{monitor-id}",
       ])
-    async let focusedF = fetch(
+    async let focusedF = fetchOptional(
       [AerospaceFocusedRow].self,
       args: [
         "list-windows", "--focused", "--json",
@@ -100,6 +97,17 @@ final class AerospaceSource: WMSource {
     guard let data = resp.stdout.data(using: .utf8) else {
       throw AerospaceSocketError(message: "stdout not utf8")
     }
+    return try JSONDecoder().decode([T].self, from: data)
+  }
+
+  /// aerospace returns exit 2 "No window is focused" when the visible
+  /// workspace is empty; treat that as an empty result rather than a failure.
+  private func fetchOptional<T: Decodable & Sendable>(
+    _ type: [T].Type, args: [String]
+  ) async throws -> [T] {
+    let resp = try await cmd.send(args: args)
+    if resp.exitCode != 0 { return [] }
+    guard let data = resp.stdout.data(using: .utf8) else { return [] }
     return try JSONDecoder().decode([T].self, from: data)
   }
 
@@ -148,8 +156,12 @@ final class AerospaceSource: WMSource {
     }
 
     let focusedWindowId = focused.first.map { String($0.id) }
-    state.setAll(
-      monitors: monitorOrder.compactMap { monitorById[$0] },
-      focusedWindowId: focusedWindowId)
+    let finalMonitors = monitorOrder.compactMap { monitorById[$0] }
+    for m in finalMonitors {
+      let ids = m.workspaces.map { "\($0.id)(\($0.windows.count))" }.joined(separator: ",")
+      Log.source.debug(
+        "monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") ws=[\(ids)]")
+    }
+    state.setAll(monitors: finalMonitors, focusedWindowId: focusedWindowId)
   }
 }
