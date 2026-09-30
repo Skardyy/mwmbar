@@ -1,0 +1,13 @@
+included:
+  - Sources
+
+disabled_rules:
+  - trailing_comma
+  - todo
+
+line_length:
+  warning: 100
+  error: 140
+
+identifier_name:
+  min_length: 1
