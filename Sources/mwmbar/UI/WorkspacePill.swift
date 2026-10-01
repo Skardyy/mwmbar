@@ -1,5 +1,20 @@
 import AppKit
+import Combine
 import SwiftUI
+
+struct PillFrameKey: PreferenceKey {
+  static let defaultValue: CGRect = .zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    value = nextValue()
+  }
+}
+
+/// not @MainActor so onPreferenceChange's non isolated closure can write
+/// synchronously; both reads and writes happen from the SwiftUI update loop
+/// in practice.
+final class PillGeomModel: ObservableObject, @unchecked Sendable {
+  @Published var frame: CGRect = .zero
+}
 
 struct WorkspacePill: View {
   let workspace: Workspace
@@ -7,8 +22,11 @@ struct WorkspacePill: View {
   let focusedWindowId: String?
   let onTap: () -> Void
   let onIconClick: (Window) -> Void
+  let onPeekEnter: (CGFloat) -> Void
+  let onPeekExit: () -> Void
 
   @StateObject private var hover = HoverModel()
+  @StateObject private var geom = PillGeomModel()
 
   var body: some View {
     HStack(spacing: BarConfig.iconGap) {
@@ -30,7 +48,21 @@ struct WorkspacePill: View {
     .scaleEffect(isActive ? BarConfig.activePillScale : 1.0)
     .contentShape(Rectangle())
     .onTapGesture(perform: onTap)
-    .onHover { over in hover.value = over }
+    .background(
+      GeometryReader { geo in
+        let frame = geo.frame(in: .named("bar"))
+        Color.clear
+          .task(id: frame) { geom.frame = frame }
+      }
+    )
+    .onHover { over in
+      hover.value = over
+      if over {
+        onPeekEnter(geom.frame.midX)
+      } else {
+        onPeekExit()
+      }
+    }
     .animation(BarConfig.transition, value: isActive)
     .animation(BarConfig.hoverTransition, value: hover.value)
     .animation(BarConfig.transition, value: workspace.windows)

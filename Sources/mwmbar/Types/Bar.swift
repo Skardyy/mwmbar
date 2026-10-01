@@ -9,10 +9,18 @@ final class Bar {
 
   @ObservationIgnored private let tracker = CompositorTracker()
   @ObservationIgnored private var invalidator: Invalidator!
+  /// fires on any live window set change. consumers that cache per window
+  /// data (peek thumbnails, icon snapshots) hook this to drop stale entries.
+  @ObservationIgnored var onLifecycleChange: (() -> Void)?
 
   init() {
     invalidator = Invalidator(tracker: tracker) { [weak self] monitors, focus in
       self?.applyIfChanged(monitors: monitors, focusedWindowId: focus)
+    }
+    let inner = tracker.onChange
+    tracker.onChange = { [weak self] in
+      inner?()
+      self?.onLifecycleChange?()
     }
   }
 

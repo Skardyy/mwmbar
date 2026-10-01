@@ -6,6 +6,8 @@ final class BarController {
   let state = Bar()
   var source: (any WMSource)?
   private var windowsByMonitor: [String: BarWindow] = [:]
+  private var peekByMonitor: [String: PeekController] = [:]
+  private let peekService = PeekService()
   private let cpu = CpuStatItem()
   nonisolated(unsafe) private var middleClickMonitor: Any?
 
@@ -15,6 +17,12 @@ final class BarController {
     source = src
     src.start(bar: state)
     cpu.start()
+    peekService.ensurePermission()
+    state.onLifecycleChange = { [weak self] in
+      guard let self else { return }
+      self.peekService.invalidateAll()
+      for peek in self.peekByMonitor.values { peek.refreshIfShown() }
+    }
     installMiddleClickMonitor()
     syncWindows()
   }
@@ -49,6 +57,9 @@ final class BarController {
         Log.bar.warning("monitor \(monitor.id) has no matching NSScreen")
         continue
       }
+      let peek = PeekController(screen: screen, service: peekService)
+      peekByMonitor[monitor.id] = peek
+      let monId = monitor.id
       windowsByMonitor[monitor.id] = BarWindow(
         monitorId: monitor.id, screen: screen, state: state,
         onSwitchWorkspace: { [weak self] wsId, monId in
@@ -56,7 +67,23 @@ final class BarController {
         },
         onRestoreWindow: { [weak self] id in
           self?.state.restoreWindow(id: id)
+        },
+        onPeekEnter: { [weak self] ws, pillLocalX in
+          guard let self else { return }
+          let ids: [CGWindowID] = ws.windows.compactMap { UInt32($0.id) }
+          let origin = self.windowsByMonitor[monId]?.originX ?? 0
+          let screenX = origin + pillLocalX
+          Log.bar.debug(
+            "peek anchor ws=\(ws.id) local=\(pillLocalX) origin=\(origin) screen=\(screenX)")
+          self.peekByMonitor[monId]?.enter(
+            workspaceId: ws.id, windowIds: ids, pillCenterX: screenX)
+        },
+        onPeekExit: { [weak self] in
+          self?.peekByMonitor[monId]?.exit()
         })
+    }
+    for (id, _) in peekByMonitor where !live.contains(id) {
+      peekByMonitor.removeValue(forKey: id)
     }
     // withObservationTracking fires onChange exactly once; recurse into
     // syncWindows from the handler to resubscribe for the next change.

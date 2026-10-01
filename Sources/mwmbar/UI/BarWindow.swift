@@ -11,13 +11,17 @@ final class BarWindow {
   init(
     monitorId: String, screen: NSScreen, state: Bar,
     onSwitchWorkspace: @escaping (String, String) -> Void,
-    onRestoreWindow: @escaping (String) -> Void
+    onRestoreWindow: @escaping (String) -> Void,
+    onPeekEnter: @escaping (Workspace, CGFloat) -> Void,
+    onPeekExit: @escaping () -> Void
   ) {
     let root = BarWindowRoot(
       monitorId: monitorId,
       state: state,
       onSwitchWorkspace: onSwitchWorkspace,
-      onRestoreWindow: onRestoreWindow)
+      onRestoreWindow: onRestoreWindow,
+      onPeekEnter: onPeekEnter,
+      onPeekExit: onPeekExit)
     hosting = NSHostingController(rootView: root)
     // skip sizingOptions. NSHostingController's own resize path anchors the
     // window in a way that visibly shifts the left edge during width change;
@@ -94,6 +98,10 @@ final class BarWindow {
     window.close()
   }
 
+  /// screen x of the bar panel's leading edge. consumers add their SwiftUI
+  /// local x to this to get a screen coord.
+  var originX: CGFloat { window.frame.minX }
+
 }
 
 struct BarWindowRoot: View {
@@ -101,12 +109,16 @@ struct BarWindowRoot: View {
   let state: Bar
   let onSwitchWorkspace: (String, String) -> Void
   let onRestoreWindow: (String) -> Void
+  let onPeekEnter: (Workspace, CGFloat) -> Void
+  let onPeekExit: () -> Void
 
   var body: some View {
     BarView(
       monitorId: monitorId,
       onSwitchWorkspace: onSwitchWorkspace,
-      onRestoreWindow: onRestoreWindow
+      onRestoreWindow: onRestoreWindow,
+      onPeekEnter: onPeekEnter,
+      onPeekExit: onPeekExit
     )
     .environment(state)
   }

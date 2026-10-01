@@ -5,11 +5,14 @@ struct BarView: View {
   @Environment(Bar.self) private var state
   let onSwitchWorkspace: (String, String) -> Void
   let onRestoreWindow: (String) -> Void
+  let onPeekEnter: (Workspace, CGFloat) -> Void
+  let onPeekExit: () -> Void
 
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
     content(monitor: monitor)
       .frame(maxWidth: .infinity, alignment: .leading)
+      .coordinateSpace(name: "bar")
   }
 
   @ViewBuilder
@@ -32,7 +35,9 @@ struct BarView: View {
               } else {
                 onSwitchWorkspace(ws.id, monitorId)
               }
-            }
+            },
+            onPeekEnter: { x in onPeekEnter(ws, x) },
+            onPeekExit: onPeekExit
           )
           .transition(.opacity.combined(with: .scale(scale: 0.9)))
         }
