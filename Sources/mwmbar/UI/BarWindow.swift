@@ -22,6 +22,7 @@ final class BarWindow {
     hosting.sizingOptions = [.preferredContentSize]
     self.screen = screen
 
+    // nonactivatingPanel keeps clicks from stealing key status from the user's focused window.
     let panel = NSPanel(
       contentRect: .zero,
       styleMask: [.borderless, .nonactivatingPanel],
@@ -32,6 +33,8 @@ final class BarWindow {
     panel.backgroundColor = .clear
     panel.hasShadow = false
     panel.level = .statusBar
+    // canJoinAllSpaces: visible on every Space. stationary: no Mission Control
+    // shuffle. ignoresCycle: skip cmd tab.
     panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
     panel.contentViewController = hosting
     panel.ignoresMouseEvents = false
@@ -73,9 +76,11 @@ final class BarWindow {
     let h = size.height
     if w <= 0 || h <= 0 { return }
     let menubarH = full.height - screen.visibleFrame.height
+    // notched displays reserve a taller menubar (~37pt); non notched sit around 24pt.
     let hasNotch = menubarH > 32
     let x: CGFloat
     if hasNotch {
+      // 110pt right of center clears the notch cutout on 14/16" MacBooks.
       x = full.origin.x + full.width / 2 + 110
     } else {
       x = full.origin.x + (full.width - w) / 2

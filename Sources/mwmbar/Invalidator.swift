@@ -17,7 +17,6 @@ final class Invalidator {
   private let tracker: CompositorTracker
   private let commit: ([Monitor], String?) -> Void
   private var lastMonitors: [Monitor] = []
-  private var lastFocus: String?
   private var haveSubmission = false
   private var placement: [String: (monitorId: String, workspaceId: String)] = [:]
 
@@ -25,11 +24,11 @@ final class Invalidator {
     self.tracker = tracker
     self.commit = commit
     tracker.onChange = { [weak self] in self?.reevaluate() }
+    tracker.onFocusChange = { [weak self] in self?.reevaluate() }
   }
 
-  func tryUpdate(monitors: [Monitor], focusedWindowId: String?) {
+  func tryUpdate(monitors: [Monitor]) {
     lastMonitors = monitors
-    lastFocus = focusedWindowId
     haveSubmission = true
     updatePlacement(from: monitors)
     reevaluate()
@@ -69,7 +68,7 @@ final class Invalidator {
       }
       return out
     }
-    let focus = lastFocus.flatMap { tracker.live[$0] != nil ? $0 : nil }
+    let focus = tracker.focusedWindowId.flatMap { tracker.live[$0] != nil ? $0 : nil }
     commit(filtered, focus)
   }
 

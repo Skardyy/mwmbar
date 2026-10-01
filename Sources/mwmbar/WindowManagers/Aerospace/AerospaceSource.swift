@@ -3,6 +3,8 @@ import Foundation
 @MainActor
 final class AerospaceSource: WMSource {
   private weak var bar: Bar?
+  // two sockets: the events socket is parked in `subscribe --all` and cannot serve requests,
+  // so cmd needs its own connection for list-monitors / list-workspaces / workspace switches.
   private let cmd = AerospaceSocket()
   private let events = AerospaceSocket()
 
@@ -68,18 +70,11 @@ final class AerospaceSource: WMSource {
         "list-windows", "--all", "--json",
         "--format", "%{window-id}%{app-name}%{app-bundle-id}%{workspace}%{monitor-id}",
       ])
-    async let focusedF = fetchOptional(
-      [AerospaceFocusedRow].self,
-      args: [
-        "list-windows", "--focused", "--json",
-        "--format", "%{window-id}",
-      ])
     do {
       let monitors = try await monitorsF
       let workspaces = try await workspacesF
       let windows = try await windowsF
-      let focused = try await focusedF
-      apply(monitors: monitors, workspaces: workspaces, windows: windows, focused: focused)
+      apply(monitors: monitors, workspaces: workspaces, windows: windows)
     } catch {
       Log.source.warning("aerospace refresh aborted: \(String(describing: error))")
     }
@@ -99,25 +94,10 @@ final class AerospaceSource: WMSource {
     return try JSONDecoder().decode([T].self, from: data)
   }
 
-  /// aerospace returns exit 2 "No window is focused" when the visible
-  /// workspace is empty; treat that as an empty result rather than a failure.
-  /// non-utf8 stdout still throws because that means aerospace itself is broken.
-  private func fetchOptional<T: Decodable & Sendable>(
-    _ type: [T].Type, args: [String]
-  ) async throws -> [T] {
-    let resp = try await cmd.send(args: args)
-    if resp.exitCode != 0 { return [] }
-    guard let data = resp.stdout.data(using: .utf8) else {
-      throw AerospaceSocketError(message: "stdout not utf8 (aerospace corrupted?)")
-    }
-    return try JSONDecoder().decode([T].self, from: data)
-  }
-
   private func apply(
     monitors: [AerospaceMonitorRow],
     workspaces: [AerospaceWorkspaceRow],
-    windows: [AerospaceWindowRow],
-    focused: [AerospaceFocusedRow]
+    windows: [AerospaceWindowRow]
   ) {
     var monitorById: [Int: Monitor] = [:]
     var monitorOrder: [Int] = []
@@ -155,13 +135,12 @@ final class AerospaceSource: WMSource {
       monitorById[key.monitorId] = monitor
     }
 
-    let focusedWindowId = focused.first.map { String($0.id) }
     let finalMonitors = monitorOrder.compactMap { monitorById[$0] }
     for m in finalMonitors {
       let ids = m.workspaces.map { "\($0.id)(\($0.windows.count))" }.joined(separator: ",")
       Log.source.debug(
         "monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") ws=[\(ids)]")
     }
-    bar?.tryUpdate(monitors: finalMonitors, focusedWindowId: focusedWindowId)
+    bar?.tryUpdate(monitors: finalMonitors)
   }
 }

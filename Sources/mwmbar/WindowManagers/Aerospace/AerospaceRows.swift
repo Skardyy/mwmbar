@@ -36,8 +36,3 @@ struct AerospaceWindowRow: Decodable {
     case monitorId = "monitor-id"
   }
 }
-
-struct AerospaceFocusedRow: Decodable {
-  let id: Int
-  private enum CodingKeys: String, CodingKey { case id = "window-id" }
-}

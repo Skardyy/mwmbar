@@ -16,7 +16,11 @@ final class CompositorTracker {
 
   private(set) var live: [String: WindowInfo] = [:]
   private(set) var hidden: Set<String> = []
+  /// the window id with system focus, driven by NSWorkspace frontmost app plus
+  /// per app kAXFocusedWindowChanged. nil when nothing has focus.
+  private(set) var focusedWindowId: String?
   var onChange: (() -> Void)?
+  var onFocusChange: (() -> Void)?
 
   private var running = false
   private var observers: [pid_t: AXObserver] = [:]
@@ -59,10 +63,58 @@ final class CompositorTracker {
       ) { [weak self] _ in
         MainActor.assumeIsolated { self?.scheduleRescan() }
       })
+    appWatchers.append(
+      nc.addObserver(
+        forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+      ) { [weak self] n in
+        let pid = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+          .processIdentifier
+        MainActor.assumeIsolated { self?.refreshFocus(pid: pid) }
+      })
+    refreshFocus(pid: nil)
+  }
+}
+
+extension CompositorTracker {
+  /// pass pid when the caller already knows the active app (notification
+  /// userInfo gives the authoritative pid; NSWorkspace.frontmostApplication
+  /// can lag at the moment didActivate fires). newly launched apps return nil
+  /// here because their AX tree is not fully built; retry 200ms later once.
+  func refreshFocus(pid: pid_t? = nil, retry: Bool = true) {
+    let target = pid ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+    guard let target else {
+      setFocused(nil)
+      return
+    }
+    let axApp = AXUIElementCreateApplication(target)
+    var value: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(
+      axApp, kAXFocusedWindowAttribute as CFString, &value)
+    guard err == .success, let value else {
+      setFocused(nil)
+      if retry {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+          MainActor.assumeIsolated { self?.refreshFocus(pid: target, retry: false) }
+        }
+      }
+      return
+    }
+    // AXUIElement is a CF type; `as?` on CFTypeRef bridges wrong. downcast directly.
+    let axWindow = unsafeDowncast(value, to: AXUIElement.self)
+    setFocused(windowId(axWindow).map(String.init))
   }
 
-  /// unminimize the window by walking the owning pid's AX windows to find it.
-  /// no cache. one shot per click; a few ms.
+  fileprivate func setFocused(_ id: String?) {
+    if focusedWindowId == id { return }
+    focusedWindowId = id
+    onFocusChange?()
+  }
+
+}
+
+extension CompositorTracker {
+  /// unminimize and raise a window by its CGWindowID. walks the owning pid's
+  /// AX windows because AX offers no direct id to AXUIElement lookup.
   func restore(id: String) {
     guard let info = live[id] else {
       Log.bar.warning("restore \(id): unknown to compositor. bar and tracker desynced.")
@@ -90,7 +142,9 @@ final class CompositorTracker {
     }
     Log.bar.warning("restore \(id): window not found in pid=\(info.pid) AX list.")
   }
+}
 
+extension CompositorTracker {
   func stop() {
     if !running { return }
     running = false
@@ -113,6 +167,7 @@ final class CompositorTracker {
     if scanPending { return }
     scanPending = true
     let fullScan = pid == nil
+    // 50ms debounce coalesces AX bursts (quit, mass create) into one scan.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
@@ -165,7 +220,7 @@ final class CompositorTracker {
       Log.bar.warning(
         "AX kAXWindows failed pid=\(pid) err=\(err.rawValue) app=\(bid). check permission.")
     }
-    // drop any windows we previously attributed to this pid that no longer exist
+    // evict stale ids for this pid: anything attributed to pid but missing from the fresh AX scan.
     for (sid, info) in live where info.pid == pid && !seen.contains(sid) {
       live.removeValue(forKey: sid)
       hidden.remove(sid)
@@ -236,9 +291,14 @@ final class CompositorTracker {
       var elementPid: pid_t = 0
       let pidOk = AXUIElementGetPid(element, &elementPid) == .success
       let scanPid = pidOk ? elementPid : nil
+      let isFocusEvent = name == (kAXFocusedWindowChangedNotification as String)
       Task { @MainActor in
         Log.bar.debug("AX event \(name) pid=\(scanPid.map(String.init) ?? "?")")
-        tracker.scheduleRescan(pid: scanPid)
+        if isFocusEvent {
+          tracker.refreshFocus(pid: scanPid)
+        } else {
+          tracker.scheduleRescan(pid: scanPid)
+        }
       }
     }
     let err = AXObserverCreate(pid, callback, &observer)
@@ -255,6 +315,7 @@ final class CompositorTracker {
     for notif in [
       kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
       kAXWindowCreatedNotification, kAXUIElementDestroyedNotification,
+      kAXFocusedWindowChangedNotification,
     ] {
       let addErr = AXObserverAddNotification(observer, axApp, notif as CFString, refcon)
       if addErr != .success {

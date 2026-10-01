@@ -19,7 +19,7 @@ struct WorkspacePill: View {
       ForEach(workspace.windows) { w in
         WindowIcon(
           window: w,
-          isFocused: w.id == focusedWindowId,
+          isFocused: isActive && w.id == focusedWindowId,
           onClick: { onIconClick(w) })
       }
     }

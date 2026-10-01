@@ -40,6 +40,7 @@ final class BarController {
           self?.state.restoreWindow(id: id)
         })
     }
+    // withObservationTracking is one shot; onChange re enters syncWindows to re subscribe.
     withObservationTracking { [self] in
       _ = state.monitors.map { $0.id }
     } onChange: { [weak self] in
