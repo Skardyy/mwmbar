@@ -58,9 +58,21 @@ struct WorkspacePill: View {
         WindowIcon(
           window: w,
           isFocused: isActive && w.id == focusedWindowId,
-          onClick: { onIconClick(w) })
+          onClick: { onIconClick(w) }
+        )
+        .transition(
+          .scale.combined(with: .opacity)
+            .animation(.spring(response: 0.35, dampingFraction: 0.55)))
       }
     }
+    // implicit spring for everything inside this HStack: icon x reflow,
+    // focused scale pop, opacity dim, shadow halo, hidden badge.
+    .animation(
+      .spring(response: 0.3, dampingFraction: 0.75),
+      value: workspace.windows.map { "\($0.id):\($0.isHidden)" }
+    )
+    .animation(.spring(response: 0.3, dampingFraction: 0.75), value: focusedWindowId)
+    .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isActive)
     .padding(.horizontal, 7)
     .padding(.vertical, 3)
     .frame(width: targetWidth, alignment: .leading)
