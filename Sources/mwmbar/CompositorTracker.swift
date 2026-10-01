@@ -33,10 +33,21 @@ final class CompositorTracker {
     if running { return }
     running = true
     Log.bar.info("CompositorTracker start trusted=\(AXIsProcessTrusted())")
+    seedObservers()
     rescan()
     seedHidden()
     installWorkspaceObservers()
     refreshFocus(pid: nil)
+  }
+
+  /// install an AX observer per running regular app, including ones with no
+  /// current windows (Finder, system apps). without this a Finder window
+  /// opened after startup fires AXWindowCreated into no listener.
+  private func seedObservers() {
+    for app in NSWorkspace.shared.runningApplications
+    where app.activationPolicy == .regular {
+      installObserver(for: app.processIdentifier)
+    }
   }
 }
 
@@ -74,90 +85,8 @@ extension CompositorTracker {
 }
 
 extension CompositorTracker {
-  /// focus is the topmost normal-layer window owned by the frontmost app.
-  /// CGWindowListCopyWindowInfo returns windows in z order so the first match
-  /// wins. no AX, no readiness delay, no retry.
-  func refreshFocus(pid: pid_t? = nil) {
-    let target = pid ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
-    guard let target else {
-      setFocused(nil)
-      return
-    }
-    let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-    guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]
-    else {
-      setFocused(nil)
-      return
-    }
-    for dict in list {
-      guard
-        let ownerPid = dict[kCGWindowOwnerPID as String] as? pid_t, ownerPid == target,
-        let layer = dict[kCGWindowLayer as String] as? Int, layer == 0,
-        let number = dict[kCGWindowNumber as String] as? CGWindowID
-      else { continue }
-      setFocused(String(number))
-      return
-    }
-    setFocused(nil)
-  }
-
-  /// one off AX sweep at startup to pick up windows that are already minimized
-  /// or belong to app hidden processes. after this, hidden is maintained
-  /// purely by AX notifications and NSWorkspace hide/unhide events.
-  fileprivate func seedHidden() {
-    var next: Set<String> = []
-    for (sid, info) in live {
-      let axApp = AXUIElementCreateApplication(info.pid)
-      var value: CFTypeRef?
-      guard
-        AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value)
-          == .success,
-        let windows = value as? [AXUIElement]
-      else { continue }
-      if NSRunningApplication(processIdentifier: info.pid)?.isHidden == true {
-        next.insert(sid)
-        continue
-      }
-      for w in windows where windowId(w).map(String.init) == sid {
-        if isMinimized(w) { next.insert(sid) }
-        break
-      }
-    }
-    if next != hidden {
-      hidden = next
-      onChange?()
-    }
-  }
-
-  fileprivate func setAppHidden(pid: pid_t?, hidden value: Bool) {
-    guard let pid else { return }
-    var changed = false
-    for (sid, info) in live where info.pid == pid {
-      if value {
-        if hidden.insert(sid).inserted { changed = true }
-      } else {
-        if hidden.remove(sid) != nil { changed = true }
-      }
-    }
-    if changed { onChange?() }
-  }
-
-  fileprivate func markHidden(_ id: String, _ value: Bool) {
-    let changed: Bool
-    if value {
-      changed = hidden.insert(id).inserted
-    } else {
-      changed = hidden.remove(id) != nil
-    }
-    if changed { onChange?() }
-  }
-
-  fileprivate func setFocused(_ id: String?) {
-    if focusedWindowId == id { return }
-    focusedWindowId = id
-    onFocusChange?()
-  }
-
+  func setHidden(_ value: Set<String>) { hidden = value }
+  func writeFocusedWindowId(_ value: String?) { focusedWindowId = value }
 }
 
 extension CompositorTracker {
@@ -340,12 +269,12 @@ extension CompositorTracker {
 }
 
 extension CompositorTracker {
-  fileprivate func windowId(_ el: AXUIElement) -> CGWindowID? {
+  func windowId(_ el: AXUIElement) -> CGWindowID? {
     var wid: CGWindowID = 0
     return _AXUIElementGetWindow(el, &wid) == .success ? wid : nil
   }
 
-  fileprivate func isMinimized(_ el: AXUIElement) -> Bool {
+  func isMinimized(_ el: AXUIElement) -> Bool {
     var value: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(el, kAXMinimizedAttribute as CFString, &value)
     if err != .success {

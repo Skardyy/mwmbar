@@ -8,7 +8,7 @@ struct BarView: View {
 
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
-    HStack(spacing: 6) {
+    HStack(spacing: 2) {
       if let monitor {
         // hide empty workspaces; always keep the focused one so the current pos stays visible.
         let visible = monitor.workspaces.filter {
