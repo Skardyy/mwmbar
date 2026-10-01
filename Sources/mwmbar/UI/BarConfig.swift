@@ -28,6 +28,6 @@ enum BarConfig {
 
   static let focusedGlow: Color = Color(red: 0.60, green: 0.75, blue: 0.95).opacity(0.55)
 
-  static let transition: Animation = .spring(response: 0.28, dampingFraction: 0.85)
+  static let transition: Animation = .spring(response: 0.22, dampingFraction: 0.92)
   static let hoverTransition: Animation = .easeInOut(duration: 0.12)
 }

@@ -8,6 +8,12 @@ struct BarView: View {
 
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
+    content(monitor: monitor)
+      .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  @ViewBuilder
+  private func content(monitor: Monitor?) -> some View {
     HStack(spacing: 2) {
       if let monitor {
         // hide empty workspaces; always keep the focused one so the current pos stays visible.
@@ -28,10 +34,7 @@ struct BarView: View {
               }
             }
           )
-          .transition(
-            .asymmetric(
-              insertion: .scale(scale: 0.7).combined(with: .opacity),
-              removal: .scale(scale: 0.7).combined(with: .opacity)))
+          .transition(.opacity.combined(with: .scale(scale: 0.9)))
         }
       }
     }
@@ -45,6 +48,12 @@ struct BarView: View {
             .stroke(BarConfig.containerStroke, lineWidth: 0.5)
         )
     )
-    .animation(BarConfig.transition, value: monitor?.workspaces ?? [])
+    // keyed on which pills are visible so filter transitions (empty workspace
+    // getting focused or defocused) animate the pill insert/remove.
+    .animation(
+      BarConfig.transition,
+      value: monitor?.workspaces.filter {
+        !$0.windows.isEmpty || $0.id == monitor?.focusedWorkspaceId
+      }.map(\.id) ?? [])
   }
 }
