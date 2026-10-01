@@ -7,6 +7,7 @@ final class BarController {
   var source: (any WMSource)?
   private var windowsByMonitor: [String: BarWindow] = [:]
   private let cpu = CpuStatItem()
+  nonisolated(unsafe) private var middleClickMonitor: Any?
 
   func start() {
     state.start()
@@ -14,7 +15,24 @@ final class BarController {
     source = src
     src.start(bar: state)
     cpu.start()
+    installMiddleClickMonitor()
     syncWindows()
+  }
+
+  /// middle click on a hovered icon closes its window via the compositor.
+  private func installMiddleClickMonitor() {
+    middleClickMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: .otherMouseDown
+    ) { [weak self] event in
+      guard event.buttonNumber == 2 else { return event }
+      guard let id = IconHoverRegistry.shared.hoveredWindowId else { return event }
+      self?.state.closeWindow(id: id)
+      return nil
+    }
+  }
+
+  deinit {
+    if let middleClickMonitor { NSEvent.removeMonitor(middleClickMonitor) }
   }
 
   private func syncWindows() {
@@ -40,7 +58,8 @@ final class BarController {
           self?.state.restoreWindow(id: id)
         })
     }
-    // withObservationTracking is one shot; onChange re enters syncWindows to re subscribe.
+    // withObservationTracking fires onChange exactly once; recurse into
+    // syncWindows from the handler to resubscribe for the next change.
     withObservationTracking { [self] in
       _ = state.monitors.map { $0.id }
     } onChange: { [weak self] in

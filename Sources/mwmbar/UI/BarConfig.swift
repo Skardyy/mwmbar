@@ -19,7 +19,7 @@ enum BarConfig {
   static let activePillScale: CGFloat = 1.04
 
   static let hoverFill: Color = .white.opacity(0.10)
-  static let hoverActiveFill: Color = Color(red: 0.60, green: 0.75, blue: 0.95).opacity(0.35)
+  static let hoverActiveFill: Color = Color(red: 0.31, green: 0.42, blue: 0.64).opacity(0.65)
 
   static let containerStroke: Color = Color(red: 0.60, green: 0.70, blue: 0.85).opacity(0.35)
 

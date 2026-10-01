@@ -24,8 +24,12 @@ final class Bar {
     tracker.restore(id: id)
   }
 
-  /// callers submit only the monitor/workspace/window tree. focused window id
-  /// is tracked separately via the compositor and merged in by the invalidator.
+  func closeWindow(id: String) {
+    tracker.close(id: id)
+  }
+
+  /// submit a candidate monitor tree. the focused window id is resolved
+  /// internally and layered onto the tree before it reaches `monitors`.
   func tryUpdate(monitors: [Monitor]) {
     invalidator.tryUpdate(monitors: monitors)
   }

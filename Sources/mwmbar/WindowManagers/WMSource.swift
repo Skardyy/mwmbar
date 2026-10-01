@@ -1,7 +1,7 @@
 @MainActor
 protocol WMSource: AnyObject {
-  /// idempotent. bar handles compositor tracking and diffing internally;
-  /// sources only need to call bar.tryUpdate on any signal.
+  /// safe to call multiple times. push a fresh monitor tree to `bar.tryUpdate`
+  /// on every WM signal; the bar handles diffing and overlaying system state.
   func start(bar: Bar)
   func switchWorkspace(id: String, monitorId: String)
 }

@@ -2,9 +2,9 @@ import AppKit
 import ApplicationServices
 
 extension CompositorTracker {
-  /// focus is the topmost normal-layer window owned by the frontmost app.
-  /// CGWindowListCopyWindowInfo returns windows in z order so the first match
-  /// wins. no AX, no readiness delay, no retry.
+  /// resolve focus to the topmost normal layer window owned by the given pid,
+  /// or the frontmost app when pid is nil. CGWindowListCopyWindowInfo returns
+  /// windows in z order so the first matching entry wins.
   func refreshFocus(pid: pid_t? = nil) {
     let target = pid ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
     guard let target else {
@@ -29,9 +29,8 @@ extension CompositorTracker {
     setFocused(nil)
   }
 
-  /// one off AX sweep at startup to pick up windows that are already minimized
-  /// or belong to app hidden processes. after this, hidden is maintained
-  /// purely by AX notifications and NSWorkspace hide/unhide events.
+  /// AX sweep over every live window to seed `hidden` with those already
+  /// minimized or owned by an app hidden process at the moment of the call.
   func seedHidden() {
     var next: Set<String> = []
     for (sid, info) in live {

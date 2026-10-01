@@ -9,6 +9,13 @@ final class HoverModel: ObservableObject {
   @Published var value = false
 }
 
+/// window id of whichever icon the cursor is over, or nil if none.
+@MainActor
+final class IconHoverRegistry {
+  static let shared = IconHoverRegistry()
+  var hoveredWindowId: String?
+}
+
 struct WindowIcon: View {
   let window: Window
   let isFocused: Bool
@@ -47,7 +54,15 @@ struct WindowIcon: View {
       }
     }
     .contentShape(Rectangle())
-    .onHover { over in hover.value = over }
+    .onHover { over in
+      hover.value = over
+      let registry = IconHoverRegistry.shared
+      if over {
+        registry.hoveredWindowId = window.id
+      } else if registry.hoveredWindowId == window.id {
+        registry.hoveredWindowId = nil
+      }
+    }
     .onTapGesture(perform: onClick)
     .animation(BarConfig.transition, value: window.isHidden)
   }

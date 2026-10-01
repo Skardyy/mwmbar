@@ -1,17 +1,14 @@
 import Foundation
 
-/// sits between the WM source and the observable Bar state. sources submit
-/// candidate monitor trees via tryUpdate; the invalidator overrides each
-/// window's compositor owned fields (bundleId, name, isHidden) with truth
-/// from CompositorTracker and drops windows the compositor has never seen.
-/// when the compositor's own state changes, the invalidator reevaluates the
-/// last submitted tree so a closed window disappears immediately even if the
-/// WM has not caught up yet.
+/// merges a candidate monitor tree with the live CompositorTracker view before
+/// handing it to `commit`. for every window in the submitted tree it overlays
+/// bundleId, name, and isHidden from the tracker and drops windows the tracker
+/// does not know. reevaluates on tracker change so UI reflects window close
+/// and focus events without waiting for another submission.
 ///
-/// also caches every window's last known (monitorId, workspaceId) so windows
-/// the WM stops reporting (aerospace drops minimized windows from
-/// list-windows --all after a while) can be reinjected as hidden entries as
-/// long as the compositor still says they exist.
+/// remembers the last (monitorId, workspaceId) seen for each window id and
+/// reinjects tracker windows that fall out of the submitted tree at their
+/// remembered slot, as hidden entries when the tracker marks them hidden.
 @MainActor
 final class Invalidator {
   private let tracker: CompositorTracker

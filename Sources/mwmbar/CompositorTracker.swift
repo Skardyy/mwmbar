@@ -1,11 +1,10 @@
 import AppKit
 import ApplicationServices
 
-/// macOS native window lifecycle authority. sits between the WM source and the
-/// bar UI: knows which windows are actually alive right now, their owning pid,
-/// bundle id, and title, and which are hidden or miniaturized. we trust the
-/// compositor over the WM so WM lag (aerospace not yet noticing a closed
-/// window, for example) does not leak into the UI.
+/// authoritative view of currently alive normal layer windows system wide:
+/// their owning pid, bundle id, title, and whether they are hidden or
+/// miniaturized. populated from CGWindowListCopyWindowInfo and kept current
+/// with AX notifications and NSWorkspace hide/launch events.
 @MainActor
 final class CompositorTracker {
   struct WindowInfo: Equatable, Sendable {
@@ -16,8 +15,8 @@ final class CompositorTracker {
 
   private(set) var live: [String: WindowInfo] = [:]
   private(set) var hidden: Set<String> = []
-  /// the window id with system focus, driven by NSWorkspace frontmost app plus
-  /// per app kAXFocusedWindowChanged. nil when nothing has focus.
+  /// window id of the topmost normal layer window owned by the frontmost app,
+  /// or nil when nothing has focus.
   private(set) var focusedWindowId: String?
   var onChange: (() -> Void)?
   var onFocusChange: (() -> Void)?
@@ -40,9 +39,9 @@ final class CompositorTracker {
     refreshFocus(pid: nil)
   }
 
-  /// install an AX observer per running regular app, including ones with no
-  /// current windows (Finder, system apps). without this a Finder window
-  /// opened after startup fires AXWindowCreated into no listener.
+  /// install an AX observer on every running regular app, including ones with
+  /// no current windows, so AXWindowCreated on a later open fires into a live
+  /// listener (Finder and other system apps start with zero windows).
   private func seedObservers() {
     for app in NSWorkspace.shared.runningApplications
     where app.activationPolicy == .regular {
@@ -129,15 +128,15 @@ extension CompositorTracker {
         if self.live != prevLive || self.hidden != prevHidden {
           self.onChange?()
         }
-        // live set grew: a window appeared. the newest focused app likely
-        // owns it. re query focus now that CGWindow has caught up.
+        // live set grew: a new window appeared and likely belongs to the
+        // frontmost app, so recompute focus now that CGWindow lists it.
         if self.live.count > prevLive.count { self.refreshFocus(pid: nil) }
       }
     }
   }
 
-  /// targeted rescan via CGWindow: pulls only the owner's windows out of the
-  /// system window list. ~10x cheaper than iterating every running app.
+  /// refresh live entries for a single pid by filtering CGWindowListCopyWindowInfo
+  /// to that owner; prunes ids no longer present.
   private func rescanPid(_ pid: pid_t) {
     guard
       let app = NSRunningApplication(processIdentifier: pid),
@@ -168,11 +167,8 @@ extension CompositorTracker {
     }
   }
 
-  /// one CoreGraphics syscall returns every window system wide with pid, bundle
-  /// hint, title, layer and onscreen flag. no Accessibility permission needed
-  /// for metadata, no AX readiness delays, and we catch apps that skip AX
-  /// notifications. hidden state is maintained via AX miniaturize events; this
-  /// path seeds nothing new, it only prunes stale ids.
+  /// rebuild `live` from a single CGWindowListCopyWindowInfo pass over every
+  /// normal layer window system wide, and prune `hidden` to the surviving ids.
   private func rescan() {
     var nextLive: [String: WindowInfo] = [:]
     let opts: CGWindowListOption = [.optionAll, .excludeDesktopElements]
@@ -286,8 +282,8 @@ extension CompositorTracker {
   }
 }
 
-// public AX api exposes no way to map an AXUIElement back to a CGWindowID, so
-// we bind the private symbol directly.
+// private SPI: the public AX api exposes no way to map an AXUIElement back
+// to a CGWindowID, so bind _AXUIElementGetWindow directly.
 private func compositorAxCallback(
   _ observer: AXObserver,
   _ element: AXUIElement,
