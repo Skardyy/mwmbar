@@ -21,6 +21,11 @@ final class PillWidthModel: ObservableObject {
   @Published var value: CGFloat = 0
 }
 
+@MainActor
+final class PillScaleModel: ObservableObject {
+  @Published var value: CGFloat = 0
+}
+
 struct WorkspacePill: View {
   let workspace: Workspace
   let isActive: Bool
@@ -33,6 +38,7 @@ struct WorkspacePill: View {
   @StateObject private var hover = HoverModel()
   @StateObject private var geom = PillGeomModel()
   @StateObject private var pillWidth = PillWidthModel()
+  @StateObject private var popScale = PillScaleModel()
 
   // deterministic target width: 7+7 outer pad + 14 label min + per icon (iconSize + preceding gap).
   private var targetWidth: CGFloat {
@@ -58,6 +64,7 @@ struct WorkspacePill: View {
     .padding(.horizontal, 7)
     .padding(.vertical, 3)
     .frame(width: targetWidth, alignment: .leading)
+    .scaleEffect(popScale.value)
     .background(alignment: .leading) {
       RoundedRectangle(cornerRadius: BarConfig.pillCorner, style: .continuous)
         .fill(currentFill)
@@ -71,6 +78,11 @@ struct WorkspacePill: View {
     }
     .onAppear {
       if pillWidth.value < 1 { pillWidth.value = targetWidth }
+      // springy pop into existence on first mount.
+      popScale.value = 0
+      withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
+        popScale.value = 1
+      }
     }
     .onChange(of: targetWidth) { _, new in
       withAnimation(BarConfig.transition) { pillWidth.value = new }
