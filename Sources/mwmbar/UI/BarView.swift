@@ -17,7 +17,7 @@ struct BarView: View {
 
   @ViewBuilder
   private func content(monitor: Monitor?) -> some View {
-    HStack(spacing: 2) {
+    HStack(spacing: 0) {
       if let monitor {
         // hide empty workspaces; always keep the focused one so the current pos stays visible.
         let visible = monitor.workspaces.filter {

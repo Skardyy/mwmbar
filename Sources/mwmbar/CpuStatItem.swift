@@ -10,7 +10,11 @@ final class CpuStatItem {
 
   init() {
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    item.button?.title = "CPU --%"
+    item.button?.image = NSImage(
+      systemSymbolName: "cpu", accessibilityDescription: "CPU usage")
+    item.button?.imagePosition = .imageLeading
+    item.button?.title = "--%"
+    item.button?.imageHugsTitle = true
     item.button?.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
   }
 
@@ -40,7 +44,7 @@ final class CpuStatItem {
     let total = user + system + idle + nice
     guard total > 0 else { return }
     let busy = Double(user + system + nice) / Double(total) * 100.0
-    item.button?.title = String(format: "CPU %2.0f%%", busy)
+    item.button?.title = String(format: "%2.0f%%", busy)
   }
 }
 
