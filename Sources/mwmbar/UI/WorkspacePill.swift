@@ -16,6 +16,11 @@ final class PillGeomModel: ObservableObject, @unchecked Sendable {
   @Published var frame: CGRect = .zero
 }
 
+@MainActor
+final class PillWidthModel: ObservableObject {
+  @Published var value: CGFloat = 0
+}
+
 struct WorkspacePill: View {
   let workspace: Workspace
   let isActive: Bool
@@ -27,6 +32,15 @@ struct WorkspacePill: View {
 
   @StateObject private var hover = HoverModel()
   @StateObject private var geom = PillGeomModel()
+  @StateObject private var pillWidth = PillWidthModel()
+
+  // deterministic target width: 7+7 outer pad + 14 label min + per icon (iconSize + preceding gap).
+  private var targetWidth: CGFloat {
+    let base: CGFloat = 14 + 14
+    let n = CGFloat(workspace.windows.count)
+    if n == 0 { return base }
+    return base + n * BarConfig.iconSize + n * BarConfig.iconGap
+  }
 
   var body: some View {
     HStack(spacing: BarConfig.iconGap) {
@@ -43,8 +57,24 @@ struct WorkspacePill: View {
     }
     .padding(.horizontal, 7)
     .padding(.vertical, 3)
-    .background(fillView)
-    .overlay(strokeView)
+    .frame(width: targetWidth, alignment: .leading)
+    .background(alignment: .leading) {
+      RoundedRectangle(cornerRadius: BarConfig.pillCorner, style: .continuous)
+        .fill(currentFill)
+        .frame(width: max(pillWidth.value, 1))
+    }
+    .overlay(alignment: .leading) {
+      RoundedRectangle(cornerRadius: BarConfig.pillCorner, style: .continuous)
+        .stroke(isActive ? BarConfig.activeStroke : .clear, lineWidth: isActive ? 1.2 : 0)
+        .shadow(color: isActive ? BarConfig.activeStroke : .clear, radius: isActive ? 4 : 0)
+        .frame(width: max(pillWidth.value, 1))
+    }
+    .onAppear {
+      if pillWidth.value < 1 { pillWidth.value = targetWidth }
+    }
+    .onChange(of: targetWidth) { _, new in
+      withAnimation(BarConfig.transition) { pillWidth.value = new }
+    }
     .contentShape(Rectangle())
     .onTapGesture(perform: onTap)
     .background(
