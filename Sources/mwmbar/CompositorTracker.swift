@@ -126,6 +126,13 @@ extension CompositorTracker {
           for p in pids { self.rescanPid(p) }
         }
         if self.live != prevLive || self.hidden != prevHidden {
+          let added = Set(self.live.keys).subtracting(prevLive.keys)
+          let removed = Set(prevLive.keys).subtracting(self.live.keys)
+          if !added.isEmpty || !removed.isEmpty {
+            Log.bar.debug(
+              "live delta +\(added.sorted().joined(separator: ",")) "
+                + "-\(removed.sorted().joined(separator: ","))")
+          }
           self.onChange?()
         }
         // live set grew: a new window appeared and likely belongs to the
@@ -150,11 +157,13 @@ extension CompositorTracker {
     guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]
     else { return }
     var seen: Set<String> = []
+    let axWindows = axWindowIds(for: pid)
     for dict in list {
       guard
         let number = dict[kCGWindowNumber as String] as? CGWindowID,
         let ownerPid = dict[kCGWindowOwnerPID as String] as? pid_t, ownerPid == pid,
-        let layer = dict[kCGWindowLayer as String] as? Int, layer == 0
+        let layer = dict[kCGWindowLayer as String] as? Int, layer == 0,
+        axWindows.contains(number)
       else { continue }
       let sid = String(number)
       seen.insert(sid)
@@ -174,6 +183,7 @@ extension CompositorTracker {
     let opts: CGWindowListOption = [.optionAll, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]
     else { return }
+    var axCache: [pid_t: Set<CGWindowID>] = [:]
     for dict in list {
       guard
         let number = dict[kCGWindowNumber as String] as? CGWindowID,
@@ -183,6 +193,9 @@ extension CompositorTracker {
         let app = NSRunningApplication(processIdentifier: pid),
         app.activationPolicy == .regular
       else { continue }
+      let axWindows = axCache[pid] ?? axWindowIds(for: pid)
+      axCache[pid] = axWindows
+      guard axWindows.contains(number) else { continue }
       installObserver(for: pid)
       let sid = String(number)
       let name = dict[kCGWindowName as String] as? String ?? app.localizedName
@@ -190,6 +203,24 @@ extension CompositorTracker {
     }
     live = nextLive
     hidden = hidden.filter { live[$0] != nil }
+  }
+
+  /// a CGWindow entry counts as a real window only if the owning app's AX
+  /// kAXWindows list contains a matching CGWindowID. filters out popover
+  /// surfaces, toolbars, shadow layers etc that CG reports at layer 0.
+  private func axWindowIds(for pid: pid_t) -> Set<CGWindowID> {
+    let axApp = AXUIElementCreateApplication(pid)
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+      let windows = value as? [AXUIElement]
+    else { return [] }
+    var ids: Set<CGWindowID> = []
+    for w in windows {
+      var wid: CGWindowID = 0
+      if _AXUIElementGetWindow(w, &wid) == .success { ids.insert(wid) }
+    }
+    return ids
   }
 
   private func handleAppLaunched(pid: pid_t?) {
