@@ -76,19 +76,15 @@ final class BarWindow {
     let menubarH = full.height - screen.visibleFrame.height
     // notched displays reserve a taller menubar (~37pt); non notched sit around 24pt.
     let hasNotch = menubarH > 32
-    let h: CGFloat = max(hosting.view.fittingSize.height, 24)
-    // panel takes the full span available (from anchor to screen edge) so
-    // SwiftUI centering inside the hosting view never shifts content.
-    // leading-aligned content inside grows strictly to the right.
+    let content = hosting.view.fittingSize
+    let h: CGFloat = max(content.height, 24)
+    let w: CGFloat = max(content.width, 60)
     let x: CGFloat
-    let w: CGFloat
     if hasNotch {
       // 110pt right of center clears the notch cutout on 14/16" MacBooks.
       x = full.origin.x + full.width / 2 + 110
-      w = full.origin.x + full.width - x
     } else {
-      x = full.origin.x
-      w = full.width
+      x = full.origin.x + (full.width - w) / 2
     }
     let y = full.origin.y + full.height - menubarH + (menubarH - h) / 2
     window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)

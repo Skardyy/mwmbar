@@ -45,7 +45,6 @@ struct WorkspacePill: View {
     .padding(.vertical, 3)
     .background(fillView)
     .overlay(strokeView)
-    .scaleEffect(isActive ? BarConfig.activePillScale : 1.0)
     .contentShape(Rectangle())
     .onTapGesture(perform: onTap)
     .background(
@@ -63,9 +62,6 @@ struct WorkspacePill: View {
         onPeekExit()
       }
     }
-    .animation(BarConfig.transition, value: isActive)
-    .animation(BarConfig.hoverTransition, value: hover.value)
-    .animation(BarConfig.transition, value: workspace.windows)
   }
 
   @ViewBuilder private var fillView: some View {

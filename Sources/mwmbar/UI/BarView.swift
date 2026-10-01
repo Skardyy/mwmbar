@@ -11,7 +11,7 @@ struct BarView: View {
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
     content(monitor: monitor)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: true, vertical: false)
       .coordinateSpace(name: "bar")
   }
 
@@ -39,7 +39,6 @@ struct BarView: View {
             onPeekEnter: { x in onPeekEnter(ws, x) },
             onPeekExit: onPeekExit
           )
-          .transition(.opacity.combined(with: .scale(scale: 0.9)))
         }
       }
     }
@@ -53,12 +52,5 @@ struct BarView: View {
             .stroke(BarConfig.containerStroke, lineWidth: 0.5)
         )
     )
-    // keyed on which pills are visible so filter transitions (empty workspace
-    // getting focused or defocused) animate the pill insert/remove.
-    .animation(
-      BarConfig.transition,
-      value: monitor?.workspaces.filter {
-        !$0.windows.isEmpty || $0.id == monitor?.focusedWorkspaceId
-      }.map(\.id) ?? [])
   }
 }

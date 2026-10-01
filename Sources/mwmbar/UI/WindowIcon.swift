@@ -34,15 +34,11 @@ struct WindowIcon: View {
       }
       .frame(width: BarConfig.iconSize, height: BarConfig.iconSize)
       .opacity(effectiveOpacity)
-      .compositingGroup()
       .scaleEffect(scale)
       .shadow(
         color: isFocused ? BarConfig.focusedGlow : .clear,
         radius: isFocused ? 4 : 0
       )
-      .animation(BarConfig.hoverTransition, value: hover.value)
-      .animation(BarConfig.transition, value: window.isHidden)
-      .animation(BarConfig.transition, value: isFocused)
 
       if window.isHidden {
         Circle()
@@ -50,7 +46,6 @@ struct WindowIcon: View {
           .frame(width: 6, height: 6)
           .overlay(Circle().stroke(BarConfig.hiddenBadgeStroke, lineWidth: 0.5))
           .offset(x: 2, y: 2)
-          .transition(.scale.combined(with: .opacity))
       }
     }
     .contentShape(Rectangle())
@@ -64,7 +59,6 @@ struct WindowIcon: View {
       }
     }
     .onTapGesture(perform: onClick)
-    .animation(BarConfig.transition, value: window.isHidden)
   }
 
   private var effectiveOpacity: Double {
