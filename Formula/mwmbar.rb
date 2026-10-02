@@ -10,11 +10,13 @@ class Mwmbar < Formula
   def install
     system "swift", "build", "-c", "release", "--disable-sandbox"
     bin.install ".build/release/mwmbar"
-    # TCC uses the code signature to key Accessibility and Screen
-    # Recording grants; without one, every upgrade produces a different
-    # binary identity and the user has to re grant from scratch.
+    # pin the designated requirement to the bundle identifier so TCC
+    # keys the Accessibility and Screen Recording grants to a stable
+    # string instead of the per build cdhash. without this the user
+    # must re grant every upgrade.
     system "/usr/bin/codesign", "--force", "-s", "-",
            "--identifier", "com.skardyy.mwmbar",
+           "-r", "=designated => identifier \"com.skardyy.mwmbar\"",
            bin/"mwmbar"
   end
 
