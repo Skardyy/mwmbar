@@ -1,10 +1,11 @@
 import Foundation
 import os
 
-/// wrapper around os.Logger. os.Logger writes to unified logging always;
-/// the stderr mirror is filtered by MWMBAR_LOG (off | error | warn | info |
-/// debug, default debug). unified logs remain readable via
-/// `log stream --predicate 'subsystem == "wmwidget"'` even with mirror off.
+/// wrapper around os.Logger. all output is gated by LogConfig.level; default
+/// is .off so no stderr writes, no string interpolation cost, and no unified
+/// logging daemon hop. enable per run via MWMBAR_LOG=debug | info | warn |
+/// error. the unified log can also be tailed live when enabled via:
+/// `log stream --predicate 'subsystem == "wmwidget"'`.
 struct MwmLogger: Sendable {
   let category: String
   private let inner: Logger
@@ -14,21 +15,29 @@ struct MwmLogger: Sendable {
     self.inner = Logger(subsystem: "wmwidget", category: category)
   }
 
-  func debug(_ msg: String) {
-    if LogConfig.stderrLevel >= .debug { emit("debug", msg) }
-    inner.debug("\(msg, privacy: .public)")
+  func debug(_ msg: @autoclosure () -> String) {
+    guard LogConfig.level >= .debug else { return }
+    let s = msg()
+    emit("debug", s)
+    inner.debug("\(s, privacy: .public)")
   }
-  func info(_ msg: String) {
-    if LogConfig.stderrLevel >= .info { emit("info", msg) }
-    inner.info("\(msg, privacy: .public)")
+  func info(_ msg: @autoclosure () -> String) {
+    guard LogConfig.level >= .info else { return }
+    let s = msg()
+    emit("info", s)
+    inner.info("\(s, privacy: .public)")
   }
-  func warning(_ msg: String) {
-    if LogConfig.stderrLevel >= .warn { emit("warn", msg) }
-    inner.warning("\(msg, privacy: .public)")
+  func warning(_ msg: @autoclosure () -> String) {
+    guard LogConfig.level >= .warn else { return }
+    let s = msg()
+    emit("warn", s)
+    inner.warning("\(s, privacy: .public)")
   }
-  func error(_ msg: String) {
-    if LogConfig.stderrLevel >= .error { emit("error", msg) }
-    inner.error("\(msg, privacy: .public)")
+  func error(_ msg: @autoclosure () -> String) {
+    guard LogConfig.level >= .error else { return }
+    let s = msg()
+    emit("error", s)
+    inner.error("\(s, privacy: .public)")
   }
 
   private func emit(_ level: String, _ msg: String) {
@@ -44,14 +53,16 @@ enum LogLevel: Int, Comparable {
 }
 
 enum LogConfig {
-  static let stderrLevel: LogLevel = {
+  // default off. @autoclosure in MwmLogger guards both the string build and
+  // the Logger subsystem call so the hot path is a single level compare.
+  static let level: LogLevel = {
     switch ProcessInfo.processInfo.environment["MWMBAR_LOG"]?.lowercased() {
-    case "off": return .off
+    case "off", nil: return .off
     case "error": return .error
     case "warn", "warning": return .warn
     case "info": return .info
-    case "debug", nil: return .debug
-    default: return .debug
+    case "debug": return .debug
+    default: return .off
     }
   }()
 }
