@@ -17,6 +17,9 @@ final class Bar {
     invalidator = Invalidator(tracker: tracker) { [weak self] monitors, focus in
       self?.applyIfChanged(monitors: monitors, focusedWindowId: focus)
     }
+    // invalidator installs its own onChange on the tracker in init above.
+    // wrap (don't replace) so both the invalidator pipeline and external
+    // lifecycle subscribers fire on every tracker tick.
     let inner = tracker.onChange
     tracker.onChange = { [weak self] in
       inner?()

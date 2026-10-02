@@ -8,8 +8,8 @@ final class PeekController {
   private let service: PeekService
   private let panel: PeekPanel
   private var currentKey: String?
-  private var pendingShow: DispatchWorkItem?
-  private var pendingHide: DispatchWorkItem?
+  private var pendingShow: Task<Void, Never>?
+  private var pendingHide: Task<Void, Never>?
   private var shown = false
 
   init(screen: NSScreen, service: PeekService) {
@@ -31,24 +31,22 @@ final class PeekController {
       return
     }
     pendingShow?.cancel()
-    let work = DispatchWorkItem { [weak self] in
-      MainActor.assumeIsolated {
-        self?.present(key: key, windowIds: windowIds, pillCenterX: pillCenterX)
-      }
+    pendingShow = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(100))
+      if Task.isCancelled { return }
+      self?.present(key: key, windowIds: windowIds, pillCenterX: pillCenterX)
     }
-    pendingShow = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
   }
 
   func exit() {
     Log.bar.debug("peek exit shown=\(shown)")
     pendingShow?.cancel()
     pendingShow = nil
-    let work = DispatchWorkItem { [weak self] in
-      MainActor.assumeIsolated { self?.dismiss() }
+    pendingHide = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(30))
+      if Task.isCancelled { return }
+      self?.dismiss()
     }
-    pendingHide = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: work)
   }
 
   func invalidate(windowId: CGWindowID) {

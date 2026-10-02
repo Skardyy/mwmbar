@@ -10,35 +10,57 @@ struct BarView: View {
 
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
-    content(monitor: monitor)
-      .coordinateSpace(.named("bar"))
+    let visible = Self.visibleWorkspaces(monitor: monitor)
+    let totalInnerW = Self.totalInnerWidth(visible: visible)
+    PillsRow(
+      monitor: monitor,
+      visible: visible,
+      totalInnerW: totalInnerW,
+      onSwitchWorkspace: onSwitchWorkspace,
+      onRestoreWindow: onRestoreWindow,
+      onPeekEnter: onPeekEnter,
+      onPeekExit: onPeekExit,
+      monitorId: monitorId,
+      focusedWindowId: state.focusedWindowId
+    )
+    .coordinateSpace(.named("bar"))
   }
 
-  @ViewBuilder
-  private func content(monitor: Monitor?) -> some View {
-    let visible = monitor?.workspaces.filter {
+  private static func visibleWorkspaces(monitor: Monitor?) -> [Workspace] {
+    monitor?.workspaces.filter {
       !$0.windows.isEmpty || $0.id == monitor?.focusedWorkspaceId
     } ?? []
-    let fingerprint = visible.map {
-      "\($0.id)|\($0.windows.map { "\($0.id):\($0.isHidden ? 1 : 0)" }.joined(separator: ","))"
-    }
-    let focusedWs = monitor?.focusedWorkspaceId ?? ""
-    let focusedWin = state.focusedWindowId ?? ""
+  }
 
-    let totalInnerW = visible.reduce(0.0) { acc, ws in
+  private static func totalInnerWidth(visible: [Workspace]) -> CGFloat {
+    visible.reduce(0.0) { acc, ws in
       let base: CGFloat = 14 + 14
       let n = CGFloat(ws.windows.count)
       let w = n == 0 ? base : base + n * BarConfig.iconSize + n * BarConfig.iconGap
       return acc + w
     }
+  }
+}
 
+private struct PillsRow: View {
+  let monitor: Monitor?
+  let visible: [Workspace]
+  let totalInnerW: CGFloat
+  let onSwitchWorkspace: (String, String) -> Void
+  let onRestoreWindow: (String) -> Void
+  let onPeekEnter: (Workspace, CGFloat) -> Void
+  let onPeekExit: () -> Void
+  let monitorId: String
+  let focusedWindowId: String?
+
+  var body: some View {
     HStack(spacing: 0) {
       if let monitor {
         ForEach(visible) { ws in
           WorkspacePill(
             workspace: ws,
             isActive: ws.id == monitor.focusedWorkspaceId,
-            focusedWindowId: state.focusedWindowId,
+            focusedWindowId: focusedWindowId,
             onTap: { onSwitchWorkspace(ws.id, monitorId) },
             onIconClick: { window in
               if window.isHidden {
@@ -50,6 +72,8 @@ struct BarView: View {
             onPeekEnter: { x in onPeekEnter(ws, x) },
             onPeekExit: onPeekExit
           )
+          // zIndex is required. without it, SwiftUI ForEach removal
+          // transitions let the departing pill drift its siblings sideways.
           .zIndex(1)
           .transition(.scale(scale: 0.3, anchor: .leading).combined(with: .opacity))
         }
@@ -57,9 +81,10 @@ struct BarView: View {
       }
     }
     .padding(.horizontal, 6)
-    // bar BG hugs content width (totalInnerW + horizontal padding). the
-    // outer frame stays at 800pt so the HStack never has to retune its
-    // intrinsic size inside the implicit spring and pills don't drift.
+    // bar background hugs content width (totalInnerW plus horizontal padding)
+    // while the outer frame stays wide. keeping the HStack at a fixed outer
+    // width stops it from retuning its intrinsic size inside the spring
+    // animation, which would otherwise jitter pill positions.
     .background(alignment: .leading) {
       RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
         .fill(.ultraThinMaterial)
@@ -69,13 +94,23 @@ struct BarView: View {
         )
         .frame(width: totalInnerW + 12, height: 24)
     }
-    .frame(maxWidth: .infinity, maxHeight: 24, alignment: .leading)
-    .frame(height: 24)
-    // publish current bar BG width so the hosting view can reject clicks
-    // outside it (menubar items under the invisible excess area stay clickable).
+    .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+    // publish the current background width so the hosting window can reject
+    // clicks that fall outside it. menubar items sitting under the invisible
+    // excess area must stay clickable.
     .preference(key: BarWidthKey.self, value: totalInnerW + 12)
     .animation(
       .spring(response: 0.32, dampingFraction: 0.78),
-      value: fingerprint + [focusedWs, focusedWin])
+      value: AnimationKey(
+        visible: visible, focusedWs: monitor?.focusedWorkspaceId, focusedWin: focusedWindowId))
   }
+}
+
+/// composite animation key. SwiftUI diffs by Equatable; combining the three
+/// signals into one struct avoids rebuilding a joined string on every body
+/// re evaluation.
+private struct AnimationKey: Equatable {
+  let visible: [Workspace]
+  let focusedWs: String?
+  let focusedWin: String?
 }

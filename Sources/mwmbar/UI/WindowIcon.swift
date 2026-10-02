@@ -2,14 +2,18 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// hover flag shared by icon and pill. classic ObservableObject so @StateObject
-/// works with the CommandLineTools SDK (no SwiftUIMacros plugin for @State).
+// hover flag shared by icon and pill. kept as a classic ObservableObject so
+// @StateObject works under the CommandLineTools SDK, which ships without the
+// SwiftUIMacros plugin that @Observable / @State would need.
 @MainActor
 final class HoverModel: ObservableObject {
   @Published var value = false
 }
 
-/// window id of whichever icon the cursor is over, or nil if none.
+// id of whichever icon the cursor is currently over, or nil if none.
+// a global NSEvent middle click monitor in Controller reads this to close
+// the hovered window. SwiftUI gestures do not expose other mouse buttons,
+// so the AppKit monitor and this shared registry are both load bearing.
 @MainActor
 final class IconHoverRegistry {
   static let shared = IconHoverRegistry()
@@ -35,10 +39,6 @@ struct WindowIcon: View {
       .frame(width: BarConfig.iconSize, height: BarConfig.iconSize)
       .opacity(effectiveOpacity)
       .scaleEffect(scale)
-      .shadow(
-        color: isFocused ? BarConfig.focusedGlow : .clear,
-        radius: isFocused ? 4 : 0
-      )
 
       if window.isHidden {
         Circle()
@@ -74,8 +74,7 @@ struct WindowIcon: View {
   }
 
   private var scale: CGFloat {
-    if isFocused { return BarConfig.focusedScale }
-    return 1.0
+    isFocused ? BarConfig.focusedScale : 1.0
   }
 
 }
