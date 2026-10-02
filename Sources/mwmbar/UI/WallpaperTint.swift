@@ -39,15 +39,19 @@ final class WallpaperTint {
         guard let self else { return }
         guard let base else { return }
         let hsl = rgbToHsl(base)
+        // non linear boost: amplifies low to mid chroma so the pill reads
+        // noticeably against the wallpaper, while a nearly grey base still
+        // stays neutral (sqrt(0) == 0).
+        let boosted = min(1.0, sqrt(hsl.s))
         self.activeFill = Color(
-          nsColor: hslToNsColor(h: hsl.h, s: max(hsl.s, 0.45), l: 0.40)
-        ).opacity(0.55)
+          nsColor: hslToNsColor(h: hsl.h, s: boosted, l: 0.42)
+        ).opacity(0.30)
         self.activeStroke = Color(
-          nsColor: hslToNsColor(h: hsl.h, s: max(hsl.s, 0.55), l: 0.78)
-        ).opacity(0.60)
+          nsColor: hslToNsColor(h: hsl.h, s: boosted, l: 0.78)
+        ).opacity(0.80)
         self.hoverActiveFill = Color(
-          nsColor: hslToNsColor(h: hsl.h, s: max(hsl.s, 0.50), l: 0.48)
-        ).opacity(0.65)
+          nsColor: hslToNsColor(h: hsl.h, s: boosted, l: 0.50)
+        ).opacity(0.45)
       }
     }
   }
