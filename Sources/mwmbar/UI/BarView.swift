@@ -84,11 +84,10 @@ private struct PillsRow: View {
         Spacer(minLength: 0)
       }
     }
-    .padding(.horizontal, 6)
-    // bar background hugs content width (totalInnerW plus horizontal padding)
-    // while the outer frame stays wide. keeping the HStack at a fixed outer
-    // width stops it from retuning its intrinsic size inside the spring
-    // animation, which would otherwise jitter pill positions.
+    // bar background hugs content width while the outer frame stays wide.
+    // keeping the HStack at a fixed outer width stops it from retuning its
+    // intrinsic size inside the spring animation, which would otherwise
+    // jitter pill positions.
     .background(alignment: .leading) {
       RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
         .fill(.ultraThinMaterial)
@@ -96,13 +95,13 @@ private struct PillsRow: View {
           RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
             .stroke(BarConfig.containerStroke, lineWidth: 0.5)
         )
-        .frame(width: totalInnerW + 12, height: 24)
+        .frame(width: totalInnerW, height: 24)
     }
     .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
     // publish the current background width so the hosting window can reject
     // clicks that fall outside it. menubar items sitting under the invisible
     // excess area must stay clickable.
-    .preference(key: BarWidthKey.self, value: totalInnerW + 12)
+    .preference(key: BarWidthKey.self, value: totalInnerW)
     .animation(
       .spring(response: 0.32, dampingFraction: 0.78),
       value: AnimationKey(
