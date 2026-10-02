@@ -32,7 +32,10 @@ release:
 	url="https://github.com/$(REPO)/archive/refs/tags/$$tag.tar.gz"; \
 	echo "tag=$$tag"; \
 	echo "fetching $$url"; \
-	sha=$$(curl -fsSL "$$url" | shasum -a 256 | awk '{print $$1}'); \
+	tmp=$$(mktemp); \
+	curl -fsSL -o "$$tmp" "$$url" || (echo "download failed; did you push the tag?" >&2; rm -f "$$tmp"; exit 1); \
+	sha=$$(shasum -a 256 "$$tmp" | awk '{print $$1}'); \
+	rm -f "$$tmp"; \
 	test -n "$$sha" || (echo "failed to compute sha256" >&2; exit 1); \
 	echo "sha256=$$sha"; \
 	sed -i.bak -E "s|^(  url ).*|\1\"$$url\"|; s|^(  sha256 ).*|\1\"$$sha\"|" $(FORMULA); \
