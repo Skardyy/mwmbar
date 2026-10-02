@@ -70,6 +70,7 @@ struct CpuDashboard: View {
   @ObservedObject var model: CpuDashboardModel
   @ObservedObject var caffeine: CaffeineController
   let onKill: (pid_t, Bool) -> Void
+  let onRestartBar: () -> Void
 
   var body: some View {
     VStack(spacing: 10) {
@@ -96,6 +97,7 @@ struct CpuDashboard: View {
         title: "Memory", percent: model.load.memUsedFraction * 100,
         subtitle: memLabel, tint: memTint)
       Spacer()
+      RestartBarButton(action: onRestartBar)
       CaffeineButton(caffeine: caffeine)
     }
     .padding(.horizontal, 4)
@@ -257,6 +259,38 @@ private struct SortHeader: View {
 @MainActor
 private final class CaffeineHover: ObservableObject {
   @Published var value = false
+}
+
+private struct RestartBarButton: View {
+  let action: () -> Void
+  @StateObject private var hover = CaffeineHover()
+
+  var body: some View {
+    Button(action: action) {
+      VStack(spacing: 2) {
+        Image(systemName: "arrow.clockwise")
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(.primary)
+        Text("Reload")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(.primary.opacity(0.85))
+      }
+      .frame(width: 56, height: 56)
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.14) : Color.primary.opacity(0.07))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(Color.white.opacity(0.08), lineWidth: 1)
+      )
+      .scaleEffect(hover.value ? 1.04 : 1.0)
+      .animation(.easeOut(duration: 0.12), value: hover.value)
+    }
+    .buttonStyle(.plain)
+    .onHover { hover.value = $0 }
+    .help("Restart the bar (re samples the wallpaper tint).")
+  }
 }
 
 private struct CaffeineButton: View {

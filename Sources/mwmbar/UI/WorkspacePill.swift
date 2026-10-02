@@ -18,6 +18,7 @@ struct WorkspacePill: View {
   let onPeekExit: () -> Void
 
   @StateObject private var hover = PillHover()
+  @Environment(WallpaperTint.self) private var tint
 
   private var targetWidth: CGFloat {
     let base: CGFloat = 14 + 14
@@ -57,7 +58,7 @@ struct WorkspacePill: View {
     )
     .overlay(
       RoundedRectangle(cornerRadius: BarConfig.pillCorner, style: .continuous)
-        .stroke(isActive ? BarConfig.activeStroke : .clear, lineWidth: 1.2)
+        .stroke(isActive ? (tint.activeStroke ?? BarConfig.activeStroke) : .clear, lineWidth: 1.2)
     )
     .contentShape(Rectangle())
     .onTapGesture(perform: onTap)
@@ -78,7 +79,11 @@ struct WorkspacePill: View {
   }
 
   private var currentFill: Color {
-    if isActive { return hover.value ? BarConfig.hoverActiveFill : BarConfig.activeFill }
+    if isActive {
+      let active = tint.activeFill ?? BarConfig.activeFill
+      let hoverActive = tint.hoverActiveFill ?? BarConfig.hoverActiveFill
+      return hover.value ? hoverActive : active
+    }
     return hover.value ? BarConfig.hoverFill : .clear
   }
 }

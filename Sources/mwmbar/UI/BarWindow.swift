@@ -20,6 +20,7 @@ final class BarWindow {
   private let window: NSPanel
   private let hosting: BarHostingView<BarWindowRoot>
   private var screen: NSScreen
+  private let tint: WallpaperTint
   nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
   nonisolated(unsafe) private var mouseMonitor: Any?
   nonisolated(unsafe) private var globalMouseMonitor: Any?
@@ -32,9 +33,15 @@ final class BarWindow {
     onPeekExit: @escaping () -> Void
   ) {
     let hostingRef = HostingRef()
+    let displayId =
+      (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+      .uint32Value ?? CGMainDisplayID()
+    let tint = WallpaperTint(display: displayId)
+    self.tint = tint
     let root = BarWindowRoot(
       monitorId: monitorId,
       state: state,
+      tint: tint,
       onSwitchWorkspace: onSwitchWorkspace,
       onRestoreWindow: onRestoreWindow,
       onPeekEnter: onPeekEnter,
@@ -80,6 +87,7 @@ final class BarWindow {
     reshapeToContent()
     panel.orderFrontRegardless()
     installMouseMonitor()
+    tint.start()
   }
 
   deinit {
@@ -174,6 +182,7 @@ struct BarWidthKey: PreferenceKey {
 struct BarWindowRoot: View {
   let monitorId: String
   let state: Bar
+  let tint: WallpaperTint
   let onSwitchWorkspace: (String, String) -> Void
   let onRestoreWindow: (String) -> Void
   let onPeekEnter: (Workspace, CGFloat) -> Void
@@ -189,6 +198,7 @@ struct BarWindowRoot: View {
       onPeekExit: onPeekExit
     )
     .environment(state)
+    .environment(tint)
     .onPreferenceChange(BarWidthKey.self) { width in
       MainActor.assumeIsolated {
         (hostingRef.view as? BarHostingView<BarWindowRoot>)?.hitWidth = width
