@@ -16,12 +16,14 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let popover = NSPopover()
   private let model = CpuDashboardModel()
   private let caffeine = CaffeineController()
+  private let peekPref: PeekPreference
   private let sampler = ProcessSampler()
   private var sampleTimer: Timer?
   private var caffeineObserver: AnyCancellable?
   private var lastPercent = "--%"
 
-  override init() {
+  init(peekPref: PeekPreference) {
+    self.peekPref = peekPref
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     super.init()
     item.button?.image = nil
@@ -33,7 +35,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     popover.delegate = self
     let host = NSHostingController(
       rootView: CpuDashboard(
-        model: model, caffeine: caffeine,
+        model: model, caffeine: caffeine, peekPref: peekPref,
         onKill: { [weak self] pid, force in
           self?.sampler.kill(pid: pid, force: force)
         }))

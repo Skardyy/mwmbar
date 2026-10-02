@@ -69,6 +69,7 @@ final class CpuDashboardModel: ObservableObject {
 struct CpuDashboard: View {
   @ObservedObject var model: CpuDashboardModel
   @ObservedObject var caffeine: CaffeineController
+  @ObservedObject var peekPref: PeekPreference
   let onKill: (pid_t, Bool) -> Void
 
   var body: some View {
@@ -96,6 +97,7 @@ struct CpuDashboard: View {
         title: "Memory", percent: model.load.memUsedFraction * 100,
         subtitle: memLabel, tint: memTint)
       Spacer()
+      PeekButton(pref: peekPref)
       CaffeineButton(caffeine: caffeine)
     }
     .padding(.horizontal, 4)
@@ -255,63 +257,105 @@ private struct SortHeader: View {
 }
 
 @MainActor
-private final class CaffeineHover: ObservableObject {
+private final class ToggleTileHover: ObservableObject {
   @Published var value = false
+}
+
+/// square tile button for a boolean toggle. caller supplies the icon pair,
+/// active color, title shown beneath, and tooltip strings. kept isolated so
+/// the dashboard header can line up any number of tiles without duplicated
+/// styling.
+private struct ToggleTile: View {
+  let title: String
+  let isActive: Bool
+  let iconOn: String
+  let iconOff: String
+  let activeFill: Color
+  let activeInk: Color
+  let helpOn: String
+  let helpOff: String
+  let action: () -> Void
+
+  @StateObject private var hover = ToggleTileHover()
+
+  var body: some View {
+    VStack(spacing: 4) {
+      Button(action: action) {
+        VStack(spacing: 2) {
+          Image(systemName: isActive ? iconOn : iconOff)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(iconTint)
+          Text(isActive ? "On" : "Off")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(iconTint.opacity(0.85))
+        }
+        .frame(width: 56, height: 56)
+        .background(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(backgroundTint)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(
+              isActive ? activeInk.opacity(0.25) : Color.white.opacity(0.08),
+              lineWidth: 1)
+        )
+        .scaleEffect(hover.value ? 1.04 : 1.0)
+        .animation(.easeOut(duration: 0.12), value: hover.value)
+        .animation(.easeOut(duration: 0.18), value: isActive)
+      }
+      .buttonStyle(.plain)
+      .onHover { hover.value = $0 }
+      .help(isActive ? helpOn : helpOff)
+      Text(title)
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var iconTint: Color {
+    isActive ? activeInk : .primary
+  }
+
+  private var backgroundTint: Color {
+    if isActive {
+      return activeFill.opacity(hover.value ? 1.0 : 0.92)
+    }
+    return hover.value ? Color.primary.opacity(0.14) : Color.primary.opacity(0.07)
+  }
+}
+
+private struct PeekButton: View {
+  @ObservedObject var pref: PeekPreference
+
+  var body: some View {
+    ToggleTile(
+      title: "Peek",
+      isActive: pref.enabled,
+      iconOn: "eye.fill",
+      iconOff: "eye.slash",
+      activeFill: Color(red: 0.28, green: 0.72, blue: 0.80),
+      activeInk: Color(red: 0.04, green: 0.18, blue: 0.22),
+      helpOn: "Peek previews are on.",
+      helpOff: "Peek previews are off.",
+      action: { pref.toggle() })
+  }
 }
 
 private struct CaffeineButton: View {
   @ObservedObject var caffeine: CaffeineController
-  @StateObject private var hover = CaffeineHover()
 
   var body: some View {
-    Button {
-      caffeine.toggle()
-    } label: {
-      VStack(spacing: 2) {
-        Image(systemName: caffeine.active ? "cup.and.saucer.fill" : "cup.and.saucer")
-          .font(.system(size: 20, weight: .semibold))
-          .foregroundStyle(iconTint)
-        Text(caffeine.active ? "On" : "Off")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(iconTint.opacity(0.85))
-      }
-      .frame(width: 56, height: 56)
-      .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(backgroundTint)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(
-            caffeine.active ? Self.activeInk.opacity(0.25) : Color.white.opacity(0.08),
-            lineWidth: 1)
-      )
-      .scaleEffect(hover.value ? 1.04 : 1.0)
-      .animation(.easeOut(duration: 0.12), value: hover.value)
-      .animation(.easeOut(duration: 0.18), value: caffeine.active)
-    }
-    .buttonStyle(.plain)
-    .onHover { hover.value = $0 }
-    .help(
-      caffeine.active
-        ? "Keep awake ON. Lid closed still forces clamshell sleep."
-        : "Click to prevent sleep (caffeinate -dis)")
-  }
-
-  // active = warm amber (coffee tone, Material 3 "tertiary container" vibe).
-  // amber on dark text reads better than green on white.
-  private static let activeFill = Color(red: 0.98, green: 0.74, blue: 0.28)
-  private static let activeInk = Color(red: 0.22, green: 0.14, blue: 0.03)
-
-  private var iconTint: Color {
-    caffeine.active ? Self.activeInk : .primary
-  }
-
-  private var backgroundTint: Color {
-    if caffeine.active {
-      return Self.activeFill.opacity(hover.value ? 1.0 : 0.92)
-    }
-    return hover.value ? Color.primary.opacity(0.14) : Color.primary.opacity(0.07)
+    ToggleTile(
+      title: "Caffeine",
+      isActive: caffeine.active,
+      iconOn: "cup.and.saucer.fill",
+      iconOff: "cup.and.saucer",
+      activeFill: Color(red: 0.98, green: 0.74, blue: 0.28),
+      activeInk: Color(red: 0.22, green: 0.14, blue: 0.03),
+      helpOn: "Keep awake ON. Lid closed still forces clamshell sleep.",
+      helpOff: "Click to prevent sleep (caffeinate -dis)",
+      action: { caffeine.toggle() })
   }
 }
 

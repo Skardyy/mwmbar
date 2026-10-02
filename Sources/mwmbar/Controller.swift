@@ -8,7 +8,8 @@ final class BarController {
   private var windowsByMonitor: [String: BarWindow] = [:]
   private var peekByMonitor: [String: PeekController] = [:]
   private let peekService = PeekService()
-  private let cpu = CpuStatItem()
+  private let peekPref = PeekPreference()
+  private lazy var cpu = CpuStatItem(peekPref: peekPref)
   nonisolated(unsafe) private var middleClickMonitor: Any?
 
   func start() {
@@ -66,7 +67,7 @@ final class BarController {
         Log.bar.warning("monitor \(monitor.id) has no matching NSScreen")
         continue
       }
-      let peek = PeekController(screen: screen, service: peekService)
+      let peek = PeekController(screen: screen, service: peekService, pref: peekPref)
       peekByMonitor[monitor.id] = peek
       let monId = monitor.id
       windowsByMonitor[monitor.id] = BarWindow(

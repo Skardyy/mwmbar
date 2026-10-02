@@ -1,5 +1,23 @@
 import AppKit
 
+/// user toggle for the peek preview panel. backed by UserDefaults so the
+/// state survives relaunches without a dedicated config file.
+@MainActor
+final class PeekPreference: ObservableObject {
+  private static let key = "peek.enabled"
+
+  @Published var enabled: Bool {
+    didSet { UserDefaults.standard.set(enabled, forKey: Self.key) }
+  }
+
+  init() {
+    UserDefaults.standard.register(defaults: [Self.key: true])
+    self.enabled = UserDefaults.standard.bool(forKey: Self.key)
+  }
+
+  func toggle() { enabled.toggle() }
+}
+
 /// hover triggered peek. 100ms dwell to show from idle; already visible means
 /// instant swap to the next hovered workspace. 150ms grace on exit so moving
 /// between pills does not flash.
@@ -7,19 +25,22 @@ import AppKit
 final class PeekController {
   private let service: PeekService
   private let panel: PeekPanel
+  private let pref: PeekPreference
   private var currentKey: String?
   private var pendingShow: Task<Void, Never>?
   private var pendingHide: Task<Void, Never>?
   private var shown = false
 
-  init(screen: NSScreen, service: PeekService) {
+  init(screen: NSScreen, service: PeekService, pref: PeekPreference) {
     self.service = service
     self.panel = PeekPanel(screen: screen)
+    self.pref = pref
   }
 
   func setScreen(_ screen: NSScreen) { panel.setScreen(screen) }
 
   func enter(workspaceId: String, windowIds: [CGWindowID], pillCenterX: CGFloat) {
+    guard pref.enabled else { return }
     Log.bar.debug("peek enter ws=\(workspaceId) ids=\(windowIds) shown=\(shown)")
     let key = workspaceId
     pendingHide?.cancel()
