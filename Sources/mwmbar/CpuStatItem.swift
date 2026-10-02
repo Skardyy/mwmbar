@@ -36,8 +36,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
         model: model, caffeine: caffeine,
         onKill: { [weak self] pid, force in
           self?.sampler.kill(pid: pid, force: force)
-        },
-        onRestartBar: { Self.relaunch() }))
+        }))
     popover.contentViewController = host
     // repaint the menubar label whenever caffeine toggles so the tint can
     // reflect it live without waiting for the next 2s cpu tick.
@@ -57,20 +56,6 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     titleTimer?.invalidate()
     titleTimer = nil
     stopSampling()
-  }
-
-  /// re execute the current binary and exit this instance. used by the
-  /// reload button; the simplest way to reset wallpaper tint, state, and
-  /// any accumulated resource usage.
-  static func relaunch() {
-    let path = Bundle.main.executablePath ?? CommandLine.arguments[0]
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: path)
-    task.arguments = Array(CommandLine.arguments.dropFirst())
-    try? task.run()
-    DispatchQueue.main.async {
-      NSApp.terminate(nil)
-    }
   }
 
   @objc private func toggle(_ sender: Any?) {
