@@ -31,7 +31,12 @@ final class CompositorTracker {
   func start() {
     if running { return }
     running = true
-    Log.bar.info("CompositorTracker start trusted=\(AXIsProcessTrusted())")
+    // use the prompting variant so the binary gets registered in the
+    // Accessibility list; the plain AXIsProcessTrusted only reads state
+    // and never surfaces the binary to the user as a toggle.
+    let opts: NSDictionary = ["AXTrustedCheckOptionPrompt": true]
+    let trusted = AXIsProcessTrustedWithOptions(opts)
+    Log.bar.info("CompositorTracker start trusted=\(trusted)")
     seedObservers()
     rescan()
     seedHidden()
