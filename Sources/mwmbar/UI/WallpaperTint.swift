@@ -14,8 +14,15 @@ final class WallpaperTint {
   var hoverActiveFill: Color?
 
   @ObservationIgnored private let display: CGDirectDisplayID
+  /// region to sample in normalised display coords (0..1), y measured from
+  /// the top. passed in by the owning BarWindow so the pill tints to the
+  /// pixels actually sitting next to it, not an unrelated corner.
+  @ObservationIgnored private let cropFraction: CGRect
 
-  init(display: CGDirectDisplayID) { self.display = display }
+  init(display: CGDirectDisplayID, cropFraction: CGRect) {
+    self.display = display
+    self.cropFraction = cropFraction
+  }
 
   func start() {
     sample()
@@ -25,8 +32,9 @@ final class WallpaperTint {
 
   private func sample() {
     let display = self.display
+    let cropFraction = self.cropFraction
     Task.detached(priority: .utility) {
-      let base = await WallpaperSampler.sample(display: display)
+      let base = await WallpaperSampler.sample(display: display, cropFraction: cropFraction)
       await MainActor.run { [weak self] in
         guard let self else { return }
         guard let base else { return }
@@ -53,7 +61,7 @@ final class WallpaperTint {
 /// the wallpaper remains, which covers static, dynamic .heic, and video /
 /// aerial wallpapers uniformly.
 enum WallpaperSampler {
-  static func sample(display: CGDirectDisplayID) async -> NSColor? {
+  static func sample(display: CGDirectDisplayID, cropFraction: CGRect) async -> NSColor? {
     do {
       let content = try await SCShareableContent.excludingDesktopWindows(
         false, onScreenWindowsOnly: true)
@@ -63,9 +71,9 @@ enum WallpaperSampler {
       // visible wallpaper on Sonoma+ is owned by WindowManager with title
       // "Wallpaper". Backstop and offscreen agent windows show as placeholder
       // or black and must be skipped.
-      let scrFrame = CGDisplayBounds(display)
+      let scrBounds = CGDisplayBounds(display)
       let wallpaperWindows = content.windows.filter { w in
-        guard w.frame.intersects(scrFrame) else { return false }
+        guard w.frame.intersects(scrBounds) else { return false }
         let bid = w.owningApplication?.bundleIdentifier ?? ""
         return bid == "com.apple.WindowManager" && (w.title ?? "") == "Wallpaper"
       }
@@ -75,27 +83,36 @@ enum WallpaperSampler {
       } else {
         filter = SCContentFilter(display: scDisplay, including: wallpaperWindows)
       }
+      // capture must match the display aspect; otherwise SCK letterboxes
+      // the frame and the normalised cropFraction no longer lines up with
+      // the real screen.
+      let scrFrame = CGDisplayBounds(display)
+      let aspect = scrFrame.width / max(scrFrame.height, 1)
+      let targetHeight = 200
+      let targetWidth = max(1, Int((Double(targetHeight) * aspect).rounded()))
       let cfg = SCStreamConfiguration()
-      cfg.width = 64
-      cfg.height = 36
+      cfg.width = targetWidth
+      cfg.height = targetHeight
       cfg.showsCursor = false
       cfg.capturesAudio = false
       let image = try await SCScreenshotManager.captureImage(
         contentFilter: filter, configuration: cfg)
-      // sample only the top band of the wallpaper. apps usually cover the
-      // middle and bottom; the strip right under the menubar is the slice
-      // the user actually sees next to the pills.
-      let cropped = cropTopBand(image) ?? image
+      let cropped = cropToFraction(image, fraction: cropFraction) ?? image
       return dominantColor(cgImage: cropped)
     } catch {
       return nil
     }
   }
 
-  private static func cropTopBand(_ image: CGImage) -> CGImage? {
-    let bandHeight = max(1, image.height / 4)
-    // CGImage origin is top left for cropping.
-    let rect = CGRect(x: 0, y: 0, width: image.width, height: bandHeight)
+  private static func cropToFraction(_ image: CGImage, fraction: CGRect) -> CGImage? {
+    let w = CGFloat(image.width)
+    let h = CGFloat(image.height)
+    let rect = CGRect(
+      x: max(0, fraction.minX * w),
+      y: max(0, fraction.minY * h),
+      width: max(1, min(w - fraction.minX * w, fraction.width * w)),
+      height: max(1, min(h - fraction.minY * h, fraction.height * h))
+    )
     return image.cropping(to: rect)
   }
 

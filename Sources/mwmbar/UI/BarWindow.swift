@@ -36,7 +36,17 @@ final class BarWindow {
     let displayId =
       (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
       .uint32Value ?? CGMainDisplayID()
-    let tint = WallpaperTint(display: displayId)
+    // sample the top 20% of the display. on notched screens only the right
+    // half of that band is meaningful, since the notch itself splits the
+    // menubar and the pills live to the right of the notch.
+    let full = screen.frame
+    let menubarH = full.height - screen.visibleFrame.height
+    let hasNotch = menubarH > 32
+    let cropFraction =
+      hasNotch
+      ? CGRect(x: 0.5, y: 0, width: 0.5, height: 0.2)
+      : CGRect(x: 0, y: 0, width: 1.0, height: 0.2)
+    let tint = WallpaperTint(display: displayId, cropFraction: cropFraction)
     self.tint = tint
     let root = BarWindowRoot(
       monitorId: monitorId,
