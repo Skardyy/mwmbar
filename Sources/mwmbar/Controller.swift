@@ -17,7 +17,6 @@ final class BarController {
     source = src
     src.start(bar: state)
     cpu.start()
-    peekService.ensurePermission()
     state.onLifecycleChange = { [weak self] in
       guard let self else { return }
       self.peekService.invalidateAll()

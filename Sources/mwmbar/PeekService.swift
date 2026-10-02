@@ -28,6 +28,7 @@ final class PeekService {
   }
 
   func capture(windowIds: [CGWindowID], completion: @escaping @MainActor (NSImage?) -> Void) {
+    ensurePermission()
     let key = cacheKey(windowIds)
     if let hit = cache[key], Date().timeIntervalSince(hit.timestamp) < ttl {
       completion(hit.image)
