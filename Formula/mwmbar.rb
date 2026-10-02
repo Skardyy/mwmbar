@@ -13,7 +13,9 @@ class Mwmbar < Formula
     # TCC uses the code signature to key Accessibility and Screen
     # Recording grants; without one, every upgrade produces a different
     # binary identity and the user has to re grant from scratch.
-    system "/usr/bin/codesign", "--force", "-s", "-", bin/"mwmbar"
+    system "/usr/bin/codesign", "--force", "-s", "-",
+           "--identifier", "com.skardyy.mwmbar",
+           bin/"mwmbar"
   end
 
   service do
