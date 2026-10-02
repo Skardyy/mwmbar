@@ -1,29 +1,27 @@
 import AppKit
 import ApplicationServices
 
-/// trigger the Accessibility prompt while the process is still fresh to
-/// tccd (before NSApplication initialises its own event loop). calling
-/// this later, from applicationDidFinishLaunching, is silently swallowed
-/// when the process was spawned by launchd. Screen Recording is prompted
-/// lazily on first capture so a denied grant does not block the bar.
-func ensureAccessibility() {
-  let opts: NSDictionary = ["AXTrustedCheckOptionPrompt": true]
-  _ = AXIsProcessTrustedWithOptions(opts)
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private let controller = BarController()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    NSApp.setActivationPolicy(.accessory)
     controller.start()
   }
 }
 
-ensureAccessibility()
-
+// bootstrap NSApplication, set accessory policy, and finishLaunching
+// before triggering the Accessibility prompt. tccd attributes the
+// request to this process's current state; without an activation policy
+// and a finished launch the request is silently discarded for launchd
+// spawned agents. Screen Recording is prompted lazily on first capture.
 let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+app.finishLaunching()
+
+let axOpts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+_ = AXIsProcessTrustedWithOptions(axOpts)
+
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
