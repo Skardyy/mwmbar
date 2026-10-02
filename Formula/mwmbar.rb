@@ -9,29 +9,21 @@ class Mwmbar < Formula
 
   def install
     system "swift", "build", "-c", "release", "--disable-sandbox"
-
-    app = prefix/"Mwmbar.app"
-    (app/"Contents/MacOS").install ".build/release/mwmbar"
-    (app/"Contents").install "Resources/Info.plist"
-
-    # ad-hoc sign the bundle with a stable identifier so TCC can anchor
-    # Accessibility / Screen Recording grants to it. without an explicit
-    # identifier the cdhash is used and every upgrade silently revokes.
-    system "/usr/bin/codesign", "--force", "--deep", "--sign", "-",
-           "--identifier", "com.skardyy.mwmbar",
-           app.to_s
-
-    bin.write_exec_script app/"Contents/MacOS/mwmbar"
+    bin.install ".build/release/mwmbar"
+    # TCC uses the code signature to key Accessibility and Screen
+    # Recording grants; without one, every upgrade produces a different
+    # binary identity and the user has to re grant from scratch.
+    system "/usr/bin/codesign", "--force", "-s", "-", bin/"mwmbar"
   end
 
   service do
-    run opt_prefix/"Mwmbar.app/Contents/MacOS/mwmbar"
+    run opt_bin/"mwmbar"
     keep_alive true
     log_path var/"log/mwmbar.log"
     error_log_path var/"log/mwmbar.log"
   end
 
   test do
-    assert_predicate prefix/"Mwmbar.app/Contents/MacOS/mwmbar", :exist?
+    assert_predicate bin/"mwmbar", :exist?
   end
 end
