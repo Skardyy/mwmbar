@@ -6,7 +6,6 @@ class Mwmbar < Formula
   head "https://github.com/Skardyy/mwmbar.git", branch: "master"
 
   depends_on :macos
-  depends_on xcode: ["15.0", :build]
 
   def install
     system "swift", "build", "-c", "release", "--disable-sandbox"
