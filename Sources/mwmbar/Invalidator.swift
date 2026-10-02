@@ -43,6 +43,9 @@ final class Invalidator {
 
   private func reevaluate() {
     guard haveSubmission else { return }
+    let span = PerfTrace.begin("invalidator.reevaluate")
+    defer { PerfTrace.end(span) }
+    PerfTrace.incr("invalidator.reevaluate")
     var reinjectByWs: [String: [Window]] = [:]
     let known = Set(lastMonitors.flatMap { $0.workspaces.flatMap { $0.windows.map(\.id) } })
     for (id, info) in tracker.live where !known.contains(id) {

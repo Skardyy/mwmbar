@@ -25,6 +25,16 @@ final class BarController {
     }
     installMiddleClickMonitor()
     syncWindows()
+    installPerfCounterDump()
+  }
+
+  // periodic counter flush so a reader can see throughput buckets without
+  // scrolling through every per event span log. only runs when MWMBAR_PERF
+  // is set (PerfTrace guards internally).
+  private func installPerfCounterDump() {
+    Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+      Task { @MainActor in PerfTrace.dumpCounters() }
+    }
   }
 
   /// middle click on a hovered icon closes its window via the compositor.

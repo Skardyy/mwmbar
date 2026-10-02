@@ -42,11 +42,17 @@ final class Bar {
   /// submit a candidate monitor tree. the focused window id is resolved
   /// internally and layered onto the tree before it reaches `monitors`.
   func tryUpdate(monitors: [Monitor]) {
+    PerfTrace.incr("bar.tryUpdate")
     invalidator.tryUpdate(monitors: monitors)
   }
 
   private func applyIfChanged(monitors: [Monitor], focusedWindowId: String?) {
-    if monitors == self.monitors && focusedWindowId == self.focusedWindowId { return }
+    if monitors == self.monitors && focusedWindowId == self.focusedWindowId {
+      PerfTrace.incr("bar.commit.noop")
+      return
+    }
+    PerfTrace.incr("bar.commit")
+    PerfTrace.mark("bar.commit")
     for m in monitors {
       let ids = m.workspaces.map {
         "\($0.id)(\($0.windows.map { $0.isHidden ? "\($0.id)*" : $0.id }.joined(separator: ",")))"

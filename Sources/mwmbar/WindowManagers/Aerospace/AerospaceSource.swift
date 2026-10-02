@@ -7,6 +7,15 @@ final class AerospaceSource: WMSource {
   // so cmd needs its own connection for list-monitors / list-workspaces / workspace switches.
   private let cmd = AerospaceSocket()
   private let events = AerospaceSocket()
+  // refresh coalescing. aerospace fires 2 events per workspace switch
+  // (focus-changed + focused-workspace-changed) plus more on window ops.
+  // the socket is serial; firing a refresh per event queues gigs of 3
+  // request round trips under rapid activity (seen 2.2 s backlog in traces).
+  // we run at most one refresh at a time; while running we only remember
+  // "something changed" and schedule exactly one more refresh when the
+  // current one completes.
+  private var refreshInFlight = false
+  private var refreshPending = false
 
   func start(bar: Bar) {
     self.bar = bar
@@ -15,7 +24,7 @@ final class AerospaceSource: WMSource {
         Log.source.warning("aerospace cmd socket connect failed: \(String(describing: err))")
         return
       }
-      Task { @MainActor in await self?.refresh() }
+      Task { @MainActor in await self?.scheduleRefresh() }
     }
     events.connect { [weak self] err in
       if let err {
@@ -24,15 +33,22 @@ final class AerospaceSource: WMSource {
       }
       guard let self else { return }
       self.events.onFrame = { [weak self] payload in
+        var kindName = "aero.unknown"
         do {
           let event = try JSONDecoder().decode(AerospaceServerEvent.self, from: payload)
+          kindName = "aero.\(event.event)"
           Log.source.debug("event \(event.event)")
         } catch {
           let prefix = String(data: payload.prefix(120), encoding: .utf8) ?? "<bin>"
           Log.source.error(
             "aerospace event decode failed: \(error). prefix=\(prefix)")
         }
-        Task { @MainActor in await self?.refresh() }
+        let span = PerfTrace.begin(kindName)
+        PerfTrace.incr("aero.event")
+        Task { @MainActor in
+          await self?.scheduleRefresh(parentSeq: span?.seq)
+          PerfTrace.end(span)
+        }
       }
       self.events.send(args: ["subscribe", "--all"]) { r in
         if case .failure(let e) = r {
@@ -50,7 +66,27 @@ final class AerospaceSource: WMSource {
     }
   }
 
-  private func refresh() async {
+  /// enqueue a refresh. collapses N incoming events into at most one in
+  /// flight call plus one queued follow up, so a burst of workspace switch
+  /// events does not stack 60+ socket round trip chains on the serial cmd
+  /// socket.
+  private func scheduleRefresh(parentSeq: UInt64? = nil) async {
+    if refreshInFlight {
+      refreshPending = true
+      PerfTrace.incr("aero.refresh.coalesced")
+      return
+    }
+    refreshInFlight = true
+    defer { refreshInFlight = false }
+    repeat {
+      refreshPending = false
+      await refresh(parentSeq: parentSeq)
+    } while refreshPending
+  }
+
+  private func refresh(parentSeq: UInt64? = nil) async {
+    let span = PerfTrace.begin("aero.refresh", parent: parentSeq)
+    defer { PerfTrace.end(span) }
     async let monitorsF = fetch(
       [AerospaceMonitorRow].self,
       args: [

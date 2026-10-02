@@ -11,7 +11,11 @@ struct BarView: View {
   var body: some View {
     let monitor = state.monitors.first { $0.id == monitorId }
     let visible = Self.visibleWorkspaces(monitor: monitor)
-    let totalInnerW = Self.totalInnerWidth(visible: visible)
+    // record counter inside the let chain so ViewBuilder treats it as data
+    // (binding to _ consumed via subsequent compute) not as a view result.
+    let totalInnerW =
+      Self.totalInnerWidth(visible: visible)
+      + CGFloat(0 * PerfTrace.tick("barview.body"))
     PillsRow(
       monitor: monitor,
       visible: visible,

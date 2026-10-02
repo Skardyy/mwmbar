@@ -112,10 +112,12 @@ extension CompositorTracker {
     scanPending = true
     let fullScan = pid == nil
     // 50ms debounce coalesces AX bursts (quit, mass create) into one scan.
+    PerfTrace.incr("tracker.scheduleRescan")
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
         self.scanPending = false
+        let span = PerfTrace.begin(fullScan ? "tracker.rescan.full" : "tracker.rescan.pid")
         let prevLive = self.live
         let prevHidden = self.hidden
         if fullScan || self.pendingPids.isEmpty {
@@ -125,6 +127,7 @@ extension CompositorTracker {
           self.pendingPids.removeAll()
           for p in pids { self.rescanPid(p) }
         }
+        PerfTrace.end(span, detail: "live=\(self.live.count)")
         if self.live != prevLive || self.hidden != prevHidden {
           let added = Set(self.live.keys).subtracting(prevLive.keys)
           let removed = Set(prevLive.keys).subtracting(self.live.keys)
@@ -133,6 +136,7 @@ extension CompositorTracker {
               "live delta +\(added.sorted().joined(separator: ",")) "
                 + "-\(removed.sorted().joined(separator: ","))")
           }
+          PerfTrace.incr("tracker.onChange")
           self.onChange?()
         }
         // live set grew: a new window appeared and likely belongs to the
