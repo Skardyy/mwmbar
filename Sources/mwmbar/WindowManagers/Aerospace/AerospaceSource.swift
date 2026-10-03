@@ -1,30 +1,31 @@
 import Foundation
+import os.lock
 
-@MainActor
-final class AerospaceSource: WMSource {
-  private weak var bar: Bar?
-  // two sockets: the events socket is parked in `subscribe --all` and cannot serve requests,
-  // so cmd needs its own connection for list-monitors / list-workspaces / workspace switches.
+nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
+  private let invalidatorLock = OSAllocatedUnfairLock<Invalidator?>(initialState: nil)
+  // two sockets: the events socket is parked in `subscribe --all` and
+  // cannot serve requests, so cmd needs its own connection.
   private let cmd = AerospaceSocket()
   private let events = AerospaceSocket()
-  // refresh coalescing. aerospace fires 2 events per workspace switch
-  // (focus-changed + focused-workspace-changed) plus more on window ops.
-  // the socket is serial; firing a refresh per event queues gigs of 3
-  // request round trips under rapid activity (seen 2.2 s backlog in traces).
-  // we run at most one refresh at a time; while running we only remember
-  // "something changed" and schedule exactly one more refresh when the
-  // current one completes.
-  private var refreshInFlight = false
-  private var refreshPending = false
+  private let coalesce = OSAllocatedUnfairLock(initialState: Coalesce())
 
-  func start(bar: Bar) {
-    self.bar = bar
+  private struct Coalesce {
+    var inFlight = false
+    var pending = false
+  }
+
+  private var invalidator: Invalidator? {
+    invalidatorLock.withLock { $0 }
+  }
+
+  func start(invalidator: Invalidator) {
+    invalidatorLock.withLock { $0 = invalidator }
     cmd.connect { [weak self] err in
       if let err {
         Log.source.warning("aerospace cmd socket connect failed: \(String(describing: err))")
         return
       }
-      Task { @MainActor in await self?.scheduleRefresh() }
+      self?.scheduleRefresh()
     }
     events.connect { [weak self] err in
       if let err {
@@ -43,12 +44,9 @@ final class AerospaceSource: WMSource {
           Log.source.error(
             "aerospace event decode failed: \(error). prefix=\(prefix)")
         }
-        let span = PerfTrace.begin(kindName)
+        PerfTrace.incr(kindName)
         PerfTrace.incr("aero.event")
-        Task { @MainActor in
-          await self?.scheduleRefresh(parentSeq: span?.seq)
-          PerfTrace.end(span)
-        }
+        self?.scheduleRefresh()
       }
       self.events.send(args: ["subscribe", "--all"]) { r in
         if case .failure(let e) = r {
@@ -66,26 +64,40 @@ final class AerospaceSource: WMSource {
     }
   }
 
-  /// enqueue a refresh. collapses N incoming events into at most one in
-  /// flight call plus one queued follow up, so a burst of workspace switch
-  /// events does not stack 60+ socket round trip chains on the serial cmd
-  /// socket.
-  private func scheduleRefresh(parentSeq: UInt64? = nil) async {
-    if refreshInFlight {
-      refreshPending = true
-      PerfTrace.incr("aero.refresh.coalesced")
-      return
+  /// coalesces bursts into one in flight refresh plus one queued follow up;
+  /// otherwise a workspace switch burst stacks dozens of serial socket round
+  /// trips.
+  private func scheduleRefresh() {
+    let shouldRun = coalesce.withLock { c -> Bool in
+      if c.inFlight {
+        c.pending = true
+        PerfTrace.incr("aero.refresh.coalesced")
+        return false
+      }
+      c.inFlight = true
+      return true
     }
-    refreshInFlight = true
-    defer { refreshInFlight = false }
-    repeat {
-      refreshPending = false
-      await refresh(parentSeq: parentSeq)
-    } while refreshPending
+    guard shouldRun else { return }
+    Task { [weak self] in await self?.runRefreshLoop() }
   }
 
-  private func refresh(parentSeq: UInt64? = nil) async {
-    let span = PerfTrace.begin("aero.refresh", parent: parentSeq)
+  private func runRefreshLoop() async {
+    while true {
+      await refresh()
+      let keepGoing = coalesce.withLock { c -> Bool in
+        if c.pending {
+          c.pending = false
+          return true
+        }
+        c.inFlight = false
+        return false
+      }
+      if !keepGoing { return }
+    }
+  }
+
+  private func refresh() async {
+    let span = PerfTrace.begin("aero.refresh")
     defer { PerfTrace.end(span) }
     async let monitorsF = fetch(
       [AerospaceMonitorRow].self,
@@ -177,6 +189,6 @@ final class AerospaceSource: WMSource {
       Log.source.debug(
         "monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") ws=[\(ids)]")
     }
-    bar?.tryUpdate(monitors: finalMonitors)
+    invalidator?.submit(monitors: finalMonitors)
   }
 }

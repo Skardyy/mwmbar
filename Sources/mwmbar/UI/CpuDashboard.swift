@@ -1,7 +1,9 @@
 import AppKit
+import Atomics
+import Observation
 import SwiftUI
 
-struct SystemLoad: Equatable {
+struct SystemLoad: Equatable, Sendable {
   var cpuBusy: Double = 0
   var memUsedBytes: UInt64 = 0
   var memTotalBytes: UInt64 = 1
@@ -18,19 +20,80 @@ enum ProcFilter: String, CaseIterable, Identifiable {
 
 enum SortColumn { case name, cpu, memory }
 
-@MainActor
-final class CpuDashboardModel: ObservableObject {
-  @Published var load = SystemLoad()
-  @Published var procs: [ProcInfo] = []
-  @Published var filter: ProcFilter = .all
-  @Published var sortColumn: SortColumn = .cpu
-  @Published var sortAsc = false
-  @Published var search = ""
+/// immutable sample snapshot; written off main, read on main.
+struct CpuSnapshot: Sendable {
+  var load: SystemLoad = SystemLoad()
+  var procs: [ProcInfo] = []
+}
 
-  // computed every render. ProcessSampler returns ~500 items at 1.5 s;
-  // filter + sort + search on that is well under a frame budget, so no
-  // memoisation is worth the staleness risk.
-  var filtered: [ProcInfo] {
+/// observation trigger bumped after every snapshot commit so views can
+/// resubscribe.
+@MainActor
+@Observable
+final class CpuGeneration {
+  var tick: UInt64 = 0
+}
+
+/// reference wrapped snapshot so the atomic swap works on a single word.
+private final class CpuSnapshotBox: @unchecked Sendable {
+  let value: CpuSnapshot
+  init(_ value: CpuSnapshot) { self.value = value }
+}
+
+/// atomic snapshot store. writers passRetained a new box and exchange;
+/// readers (main only) load lock free. old boxes are released on main so
+/// no reader can dereference a freed pointer in the same runloop cycle.
+final class CpuStore: @unchecked Sendable {
+  let generation: CpuGeneration
+  private let snapshotPtr: ManagedAtomic<UInt>
+
+  @MainActor init() {
+    self.generation = CpuGeneration()
+    let box = CpuSnapshotBox(CpuSnapshot())
+    let raw = Unmanaged.passRetained(box).toOpaque()
+    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
+  }
+
+  deinit {
+    let raw = snapshotPtr.load(ordering: .relaxed)
+    if let ptr = UnsafeRawPointer(bitPattern: raw) {
+      Unmanaged<CpuSnapshotBox>.fromOpaque(ptr).release()
+    }
+  }
+
+  @MainActor func snapshot() -> CpuSnapshot {
+    let raw = snapshotPtr.load(ordering: .acquiring)
+    let ptr = UnsafeRawPointer(bitPattern: raw)!
+    return Unmanaged<CpuSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
+  }
+
+  func commit(_ snap: CpuSnapshot) {
+    let newBox = CpuSnapshotBox(snap)
+    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
+    let oldRawInt = snapshotPtr.exchange(
+      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
+    let gen = generation
+    Task { @MainActor in
+      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
+        Unmanaged<CpuSnapshotBox>.fromOpaque(oldPtr).release()
+      }
+      gen.tick &+= 1
+    }
+  }
+}
+
+@MainActor
+@Observable
+final class CpuDashboardModel {
+  var filter: ProcFilter = .all
+  var sortColumn: SortColumn = .cpu
+  var sortAsc = false
+  var search = ""
+
+  /// filter + sort + search is cheap on 500 ish items so it runs every
+  /// render; memoising it against the latest snapshot would stale faster
+  /// than it would save frame time.
+  func filtered(_ procs: [ProcInfo]) -> [ProcInfo] {
     let base: [ProcInfo]
     switch filter {
     case .all: base = procs
@@ -67,19 +130,24 @@ final class CpuDashboardModel: ObservableObject {
 }
 
 struct CpuDashboard: View {
-  @ObservedObject var model: CpuDashboardModel
+  @Bindable var model: CpuDashboardModel
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
+  let store: CpuStore
+  @Environment(CpuGeneration.self) private var generation
   let onKill: (pid_t, Bool) -> Void
 
   var body: some View {
+    // reading tick subscribes the view to snapshot commits.
+    let _ = generation.tick
+    let snapshot = store.snapshot()
     VStack(spacing: 10) {
-      header
+      header(load: snapshot.load)
       Divider()
       controls
       Divider()
       columnHeader
-      list
+      list(procs: snapshot.procs)
     }
     .padding(10)
     .frame(
@@ -87,15 +155,15 @@ struct CpuDashboard: View {
       minHeight: 420, idealHeight: 520, maxHeight: 820)
   }
 
-  private var header: some View {
+  private func header(load: SystemLoad) -> some View {
     HStack(spacing: 18) {
       MetricGauge(
-        title: "CPU", percent: model.load.cpuBusy,
-        subtitle: String(format: "%.0f%%", model.load.cpuBusy),
-        tint: cpuTint)
+        title: "CPU", percent: load.cpuBusy,
+        subtitle: String(format: "%.0f%%", load.cpuBusy),
+        tint: cpuTint(load))
       MetricGauge(
-        title: "Memory", percent: model.load.memUsedFraction * 100,
-        subtitle: memLabel, tint: memTint)
+        title: "Memory", percent: load.memUsedFraction * 100,
+        subtitle: memLabel(load), tint: memTint(load))
       Spacer()
       PeekButton(pref: peekPref)
       CaffeineButton(caffeine: caffeine)
@@ -128,13 +196,13 @@ struct CpuDashboard: View {
     .padding(.horizontal, 4)
   }
 
-  private var list: some View {
+  private func list(procs: [ProcInfo]) -> some View {
     ScrollView {
       LazyVStack(spacing: 0) {
         // 300 row cap. a healthy mac has 400 to 700 pids and rendering all
         // of them inside a popover drops scroll fps noticeably. sort order
         // puts the interesting rows (cpu or mem) at the top anyway.
-        ForEach(model.filtered.prefix(300)) { proc in
+        ForEach(model.filtered(procs).prefix(300)) { proc in
           ProcRow(proc: proc, onKill: onKill)
         }
       }
@@ -143,24 +211,24 @@ struct CpuDashboard: View {
     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
   }
 
-  private var memLabel: String {
-    let gb = Double(model.load.memUsedBytes) / 1_073_741_824
-    let total = Double(model.load.memTotalBytes) / 1_073_741_824
+  private func memLabel(_ load: SystemLoad) -> String {
+    let gb = Double(load.memUsedBytes) / 1_073_741_824
+    let total = Double(load.memTotalBytes) / 1_073_741_824
     return String(format: "%.1f / %.0f GB", gb, total)
   }
 
-  private var cpuTint: Color {
-    model.load.cpuBusy > 80 ? .red : model.load.cpuBusy > 50 ? .orange : .green
+  private func cpuTint(_ load: SystemLoad) -> Color {
+    load.cpuBusy > 80 ? .red : load.cpuBusy > 50 ? .orange : .green
   }
 
-  private var memTint: Color {
-    let f = model.load.memUsedFraction
+  private func memTint(_ load: SystemLoad) -> Color {
+    let f = load.memUsedFraction
     return f > 0.9 ? .red : f > 0.75 ? .orange : .blue
   }
 }
 
 private struct FilterSegment: View {
-  @ObservedObject var model: CpuDashboardModel
+  @Bindable var model: CpuDashboardModel
 
   var body: some View {
     HStack(spacing: 2) {
@@ -221,7 +289,7 @@ private final class HeaderHover: ObservableObject {
 private struct SortHeader: View {
   let label: String
   let column: SortColumn
-  @ObservedObject var model: CpuDashboardModel
+  @Bindable var model: CpuDashboardModel
   @StateObject private var hover = HeaderHover()
   // caller controls alignment via trailing / leading. the chevron slot is
   // always reserved so the label does not jump when active toggles.
@@ -261,10 +329,8 @@ private final class ToggleTileHover: ObservableObject {
   @Published var value = false
 }
 
-/// square tile button for a boolean toggle. caller supplies the icon pair,
-/// active color, title shown beneath, and tooltip strings. kept isolated so
-/// the dashboard header can line up any number of tiles without duplicated
-/// styling.
+/// square tile button for a boolean toggle; caller supplies icons, colors,
+/// title, and tooltip strings.
 private struct ToggleTile: View {
   let title: String
   let isActive: Bool

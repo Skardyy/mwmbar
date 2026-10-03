@@ -2,20 +2,22 @@ import SwiftUI
 
 struct BarView: View {
   let monitorId: String
-  @Environment(Bar.self) private var state
+  let invalidator: Invalidator
+  @Environment(BarGeneration.self) private var generation
   let onSwitchWorkspace: (String, String) -> Void
   let onRestoreWindow: (String) -> Void
   let onPeekEnter: (Workspace, CGFloat) -> Void
   let onPeekExit: () -> Void
 
   var body: some View {
-    let monitor = state.monitors.first { $0.id == monitorId }
+    // reading tick subscribes the view to snapshot commits; the let keeps
+    // viewbuilder from discarding it.
+    let _ = generation.tick
+    let _ = PerfTrace.tick("barview.body")
+    let snapshot = invalidator.snapshot()
+    let monitor = snapshot.monitors.first { $0.id == monitorId }
     let visible = Self.visibleWorkspaces(monitor: monitor)
-    // record counter inside the let chain so ViewBuilder treats it as data
-    // (binding to _ consumed via subsequent compute) not as a view result.
-    let totalInnerW =
-      Self.totalInnerWidth(visible: visible)
-      + CGFloat(0 * PerfTrace.tick("barview.body"))
+    let totalInnerW = Self.totalInnerWidth(visible: visible)
     PillsRow(
       monitor: monitor,
       visible: visible,
@@ -25,7 +27,7 @@ struct BarView: View {
       onPeekEnter: onPeekEnter,
       onPeekExit: onPeekExit,
       monitorId: monitorId,
-      focusedWindowId: state.focusedWindowId
+      focusedWindowId: snapshot.focusedWindowId
     )
     .coordinateSpace(.named("bar"))
   }
@@ -98,9 +100,8 @@ private struct PillsRow: View {
         .frame(width: totalInnerW, height: 24)
     }
     .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
-    // publish the current background width so the hosting window can reject
-    // clicks that fall outside it. menubar items sitting under the invisible
-    // excess area must stay clickable.
+    // publish bg width so clicks outside it pass through to menubar items
+    // underneath.
     .preference(key: BarWidthKey.self, value: totalInnerW)
     .animation(
       .spring(response: 0.32, dampingFraction: 0.78),
@@ -109,9 +110,8 @@ private struct PillsRow: View {
   }
 }
 
-/// composite animation key. SwiftUI diffs by Equatable; combining the three
-/// signals into one struct avoids rebuilding a joined string on every body
-/// re evaluation.
+/// composite animation key so SwiftUI diffs by Equatable without rebuilding
+/// a joined string on every body eval.
 private struct AnimationKey: Equatable {
   let visible: [Workspace]
   let focusedWs: String?

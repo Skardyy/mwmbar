@@ -17,13 +17,13 @@ struct ProcInfo: Identifiable, Hashable, Sendable {
 /// kernel's total ns against wall clock between two samples, matching the
 /// algorithm Activity Monitor uses. designed for ~1.5 s refresh while a
 /// dashboard is open; cheap enough to run at that cadence.
-@MainActor
-final class ProcessSampler {
+final class ProcessSampler: @unchecked Sendable {
   struct Prev {
     let cpuNs: UInt64
     let timestamp: UInt64
   }
 
+  private let lock = NSLock()
   private var previous: [pid_t: Prev] = [:]
 
   func sample() -> [ProcInfo] {
@@ -31,22 +31,22 @@ final class ProcessSampler {
     let now = mach_absolute_time()
     let timebase = Self.timebase
     var out: [ProcInfo] = []
-    var seen: Set<pid_t> = []
+    var nextPrev: [pid_t: Prev] = [:]
     out.reserveCapacity(pids.count)
+    let prevSnapshot: [pid_t: Prev] = lock.withLock { previous }
     for pid in pids where pid > 0 {
-      seen.insert(pid)
       guard let info = Self.read(pid: pid) else { continue }
       let totalCpuNs =
         (info.userNs + info.system) * UInt64(timebase.numer) / UInt64(timebase.denom)
       var cpuPercent = 0.0
-      if let prev = previous[pid] {
+      if let prev = prevSnapshot[pid] {
         let dCpu = totalCpuNs &- prev.cpuNs
         let dWall = (now &- prev.timestamp) * UInt64(timebase.numer) / UInt64(timebase.denom)
         if dWall > 0 {
           cpuPercent = Double(dCpu) / Double(dWall) * 100.0
         }
       }
-      previous[pid] = Prev(cpuNs: totalCpuNs, timestamp: now)
+      nextPrev[pid] = Prev(cpuNs: totalCpuNs, timestamp: now)
       out.append(
         ProcInfo(
           id: pid,
@@ -56,8 +56,8 @@ final class ProcessSampler {
           rssBytes: info.rss,
           isSystem: info.isSystem))
     }
-    // drop stale pids so the memo map doesn't leak over long sessions.
-    previous = previous.filter { seen.contains($0.key) }
+    // drop stale pids so the memo map does not leak over long sessions.
+    lock.withLock { previous = nextPrev }
     return out
   }
 
@@ -65,7 +65,7 @@ final class ProcessSampler {
     _ = Darwin.kill(pid, force ? SIGKILL : SIGTERM)
   }
 
-  private static var timebase: mach_timebase_info_data_t = {
+  nonisolated(unsafe) private static let timebase: mach_timebase_info_data_t = {
     var tb = mach_timebase_info_data_t()
     mach_timebase_info(&tb)
     return tb
@@ -138,8 +138,11 @@ final class ProcessSampler {
       || path.hasPrefix("/Library/Apple/") || path.hasPrefix("/Library/PrivilegedHelperTools/")
   }
 
-  private static var userCache: [uid_t: String] = [:]
+  nonisolated(unsafe) private static var userCache: [uid_t: String] = [:]
+  private static let userCacheLock = NSLock()
   private static func userName(uid: uid_t) -> String? {
+    userCacheLock.lock()
+    defer { userCacheLock.unlock() }
     if let hit = userCache[uid] { return hit }
     guard let pw = getpwuid(uid) else { return nil }
     let name = String(cString: pw.pointee.pw_name)

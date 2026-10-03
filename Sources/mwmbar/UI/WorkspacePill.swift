@@ -5,7 +5,9 @@ import SwiftUI
 @MainActor
 final class PillHover: ObservableObject {
   @Published var value = false
-  @Published var midX: CGFloat = 0
+  /// not @Published; written every layout tick but read imperatively and
+  /// bound to no view, so publishing would churn redraws for nothing.
+  var midX: CGFloat = 0
 }
 
 struct WorkspacePill: View {
@@ -63,10 +65,8 @@ struct WorkspacePill: View {
     .contentShape(Rectangle())
     .onTapGesture(perform: onTap)
     // publish pill midX in the shared "bar" coordinate space so the peek
-    // panel can anchor under the hovered pill. onGeometryChange's action
-    // closure runs outside the layout pass so writing @Published is safe
-    // and avoids the SwiftUI update loop warning that bare GeometryReader
-    // + @Published writes trigger.
+    // anchor can line up; onGeometryChange's action runs outside the
+    // layout pass so writes are safe.
     .onGeometryChange(for: CGFloat.self) { proxy in
       proxy.frame(in: .named("bar")).midX
     } action: { midX in

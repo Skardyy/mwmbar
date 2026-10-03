@@ -2,11 +2,8 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// standalone NSStatusItem in the system menubar showing overall CPU%.
-/// clicking opens a dashboard popover with per process CPU + memory,
-/// filter + sort, kill actions, and a caffeine toggle. the menubar text
-/// still ticks every 2s from host_statistics; the heavier per process
-/// sampler only runs while the popover is visible.
+/// menubar cpu% item that opens a dashboard popover. menubar text ticks
+/// every 2s; the per process sampler only runs while the popover is open.
 @MainActor
 final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let item: NSStatusItem
@@ -15,10 +12,12 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
 
   private let popover = NSPopover()
   private let model = CpuDashboardModel()
+  private let store = CpuStore()
   private let caffeine = CaffeineController()
   private let peekPref: PeekPreference
   private let sampler = ProcessSampler()
   private var sampleTimer: Timer?
+  private let sampleQueue = DispatchQueue(label: "mwmbar.cpu.sampler", qos: .userInitiated)
   private var caffeineObserver: AnyCancellable?
   private var lastPercent = "--%"
 
@@ -35,10 +34,12 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     popover.delegate = self
     let host = NSHostingController(
       rootView: CpuDashboard(
-        model: model, caffeine: caffeine, peekPref: peekPref,
+        model: model, caffeine: caffeine, peekPref: peekPref, store: store,
         onKill: { [weak self] pid, force in
           self?.sampler.kill(pid: pid, force: force)
-        }))
+        }
+      )
+      .environment(store.generation))
     popover.contentViewController = host
     // repaint the menubar label whenever caffeine toggles so the tint can
     // reflect it live without waiting for the next 2s cpu tick.
@@ -50,7 +51,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   func start() {
     tickTitle()
     titleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-      Task { @MainActor in self?.tickTitle() }
+      MainActor.assumeIsolated { self?.tickTitle() }
     }
   }
 
@@ -92,7 +93,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private func startSampling() {
     sampleTimer?.invalidate()
     sampleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-      Task { @MainActor in self?.sampleOnce() }
+      MainActor.assumeIsolated { self?.sampleOnce() }
     }
   }
 
@@ -105,12 +106,19 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     // per process cpu is per core (one hw thread pinned = 100%) to match
     // Activity Monitor and top. the overall gauge below stays 0 to 100
     // across all cores; mixing the two scales is intentional.
-    model.procs = sampler.sample()
-    model.load = SystemLoad(
-      cpuBusy: currentBusy(),
-      memUsedBytes: HostMemoryInfo.usedBytes(),
-      memTotalBytes: HostMemoryInfo.totalBytes(),
-      coreCount: max(1, ProcessInfo.processInfo.activeProcessorCount))
+    let busy = currentBusy()
+    let cores = max(1, ProcessInfo.processInfo.activeProcessorCount)
+    let sampler = self.sampler
+    let store = self.store
+    sampleQueue.async {
+      let procs = sampler.sample()
+      let load = SystemLoad(
+        cpuBusy: busy,
+        memUsedBytes: HostMemoryInfo.usedBytes(),
+        memTotalBytes: HostMemoryInfo.totalBytes(),
+        coreCount: cores)
+      store.commit(CpuSnapshot(load: load, procs: procs))
+    }
   }
 
   private func currentBusy() -> Double {
@@ -129,9 +137,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     applyTitle()
   }
 
-  // repaints the menubar label from lastPercent + current caffeine state.
-  // when caffeine is on, tint shifts to warm amber (matches the dashboard
-  // button) and a small zz glyph slides in before the percent.
+  // repaint menubar label from lastPercent + caffeine state. amber tint
+  // and a leading zz glyph appear when caffeine is on.
   private func applyTitle() {
     guard let button = item.button else { return }
     let color: NSColor =
@@ -144,9 +151,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
     let s = NSMutableAttributedString()
     if caffeine.active {
-      // SF Symbol tinted via palette config so the menubar actually renders
-      // the glyph in the amber tone. the earlier mask-composite extension
-      // produced a blank image when passed to NSTextAttachment.
+      // paletteColors SymbolConfiguration so the glyph renders in the
+      // amber tint; NSTextAttachment ignores mask composited tints.
       let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
       let symbol = NSImage(

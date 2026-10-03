@@ -1,11 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// hosting view that only accepts mouse events inside the bar BG region.
-/// BarView sends the current BG width via a preference. the panel's
-/// ignoresMouseEvents is toggled by a global mouse monitor (see BarWindow)
-/// since once the panel is ignoring events it can no longer detect the
-/// mouse coming back on its own.
+/// hosting view that only hit tests inside the live bar background width.
+/// hitWidth is updated via a preference key from the SwiftUI body.
 final class BarHostingView<Content: View>: NSHostingView<Content> {
   var hitWidth: CGFloat = 0
 
@@ -26,7 +23,7 @@ final class BarWindow {
   nonisolated(unsafe) private var globalMouseMonitor: Any?
 
   init(
-    monitorId: String, screen: NSScreen, state: Bar,
+    monitorId: String, screen: NSScreen, invalidator: Invalidator,
     onSwitchWorkspace: @escaping (String, String) -> Void,
     onRestoreWindow: @escaping (String) -> Void,
     onPeekEnter: @escaping (Workspace, CGFloat) -> Void,
@@ -50,7 +47,7 @@ final class BarWindow {
     self.tint = tint
     let root = BarWindowRoot(
       monitorId: monitorId,
-      state: state,
+      invalidator: invalidator,
       tint: tint,
       onSwitchWorkspace: onSwitchWorkspace,
       onRestoreWindow: onRestoreWindow,
@@ -169,15 +166,13 @@ final class BarWindow {
     window.close()
   }
 
-  /// screen x of the bar panel's leading edge. consumers add their SwiftUI
-  /// local x to this to get a screen coord.
+  /// screen x of the panel's leading edge.
   var originX: CGFloat { window.frame.minX }
 
 }
 
-/// weak back channel for BarView to push the current hit testable width
-/// into the hosting view. NSHostingView is created before SwiftUI emits any
-/// state, so the ref gets filled in during BarWindow init right after.
+/// weak holder so SwiftUI can push the hit testable width into the host
+/// view after NSHostingView construction.
 final class HostingRef: @unchecked Sendable {
   weak var view: NSView?
 }
@@ -191,7 +186,7 @@ struct BarWidthKey: PreferenceKey {
 
 struct BarWindowRoot: View {
   let monitorId: String
-  let state: Bar
+  let invalidator: Invalidator
   let tint: WallpaperTint
   let onSwitchWorkspace: (String, String) -> Void
   let onRestoreWindow: (String) -> Void
@@ -202,12 +197,13 @@ struct BarWindowRoot: View {
   var body: some View {
     BarView(
       monitorId: monitorId,
+      invalidator: invalidator,
       onSwitchWorkspace: onSwitchWorkspace,
       onRestoreWindow: onRestoreWindow,
       onPeekEnter: onPeekEnter,
       onPeekExit: onPeekExit
     )
-    .environment(state)
+    .environment(invalidator.generation)
     .environment(tint)
     .onPreferenceChange(BarWidthKey.self) { width in
       MainActor.assumeIsolated {
