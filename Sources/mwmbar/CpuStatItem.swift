@@ -20,13 +20,38 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let sampleQueue = DispatchQueue(label: "mwmbar.cpu.sampler", qos: .userInitiated)
   private var caffeineObserver: AnyCancellable?
   private var lastPercent = "--%"
+  /// pre built, uncached between launches but reused forever at runtime so
+  /// the status bar refresh does not rebuild NSImage + NSTextAttachment
+  /// every 2s tick while amber mode is on.
+  private static let caffeineFont = NSFont.monospacedSystemFont(
+    ofSize: 12, weight: .semibold)
+  private static let caffeineColor = NSColor(
+    calibratedRed: 0.98, green: 0.74, blue: 0.28, alpha: 1)
+  private static let zzAttachment: NSTextAttachment? = {
+    let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+      .applying(NSImage.SymbolConfiguration(paletteColors: [caffeineColor]))
+    guard
+      let img = NSImage(systemSymbolName: "zzz", accessibilityDescription: "keep awake")?
+        .withSymbolConfiguration(cfg)
+    else { return nil }
+    let a = NSTextAttachment()
+    a.image = img
+    a.bounds = CGRect(x: 0, y: -1, width: img.size.width, height: img.size.height)
+    return a
+  }()
+  private var lastRendered: (percent: String, caffeine: Bool)?
 
   init(peekPref: PeekPreference) {
     self.peekPref = peekPref
-    item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    // fixed length so title changes do not trigger a menubar wide
+    // relayout. 42pt fits "100%" plus the leading zz glyph under a
+    // 12pt monospace font without visible trailing padding.
+    item = NSStatusBar.system.statusItem(withLength: 42)
     super.init()
+    item.length = 42
     item.button?.image = nil
     item.button?.imagePosition = .noImage
+    item.button?.alignment = .right
     item.button?.target = self
     item.button?.action = #selector(toggle(_:))
     setTitle("--%")
@@ -141,34 +166,25 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   // and a leading zz glyph appear when caffeine is on.
   private func applyTitle() {
     guard let button = item.button else { return }
-    let color: NSColor =
-      caffeine.active
-      ? NSColor(calibratedRed: 0.98, green: 0.74, blue: 0.28, alpha: 1)
-      : .labelColor
-    // full monospaced font (not just digits) so the leading pad space in
-    // "%2.0f%%" has the same width as a digit. keeps 7% <-> 10% in place;
-    // 100% is naturally wider and shifts, which is fine.
-    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
-    let s = NSMutableAttributedString()
-    if caffeine.active {
-      // paletteColors SymbolConfiguration so the glyph renders in the
-      // amber tint; NSTextAttachment ignores mask composited tints.
-      let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-        .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-      let symbol = NSImage(
-        systemSymbolName: "zzz", accessibilityDescription: "keep awake")
-      if let img = symbol?.withSymbolConfiguration(cfg) {
-        let zz = NSTextAttachment()
-        zz.image = img
-        zz.bounds = CGRect(x: 0, y: -1, width: img.size.width, height: img.size.height)
-        s.append(NSAttributedString(attachment: zz))
-      }
+    if let last = lastRendered, last.percent == lastPercent, last.caffeine == caffeine.active {
+      return
     }
-    s.append(
-      NSAttributedString(
-        string: lastPercent,
-        attributes: [.font: font, .foregroundColor: color]))
-    button.attributedTitle = s
+    if caffeine.active, let zz = Self.zzAttachment {
+      let s = NSMutableAttributedString()
+      s.append(NSAttributedString(attachment: zz))
+      s.append(
+        NSAttributedString(
+          string: lastPercent,
+          attributes: [.font: Self.caffeineFont, .foregroundColor: Self.caffeineColor]))
+      button.attributedTitle = s
+    } else {
+      // plain title path is dramatically cheaper than attributedTitle;
+      // AppKit does not build an attributed layout for a bare String.
+      button.attributedTitle = NSAttributedString()
+      button.title = lastPercent
+      button.font = Self.caffeineFont
+    }
+    lastRendered = (lastPercent, caffeine.active)
   }
 
   private func tickTitle() {
