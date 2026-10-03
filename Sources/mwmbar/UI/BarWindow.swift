@@ -19,8 +19,6 @@ final class BarWindow {
   private var screen: NSScreen
   private let tint: WallpaperTint
   nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
-  nonisolated(unsafe) private var mouseMonitor: Any?
-  nonisolated(unsafe) private var globalMouseMonitor: Any?
 
   init(
     monitorId: String, screen: NSScreen, invalidator: Invalidator,
@@ -77,9 +75,6 @@ final class BarWindow {
     // shuffle. ignoresCycle: skip cmd tab.
     panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
     panel.contentView = hosting
-    // start ignoring; a global mouse monitor flips this off whenever the
-    // cursor is actually over the bar BG region.
-    panel.ignoresMouseEvents = true
     window = panel
 
     hosting.postsFrameChangedNotifications = true
@@ -93,46 +88,12 @@ final class BarWindow {
     }
     reshapeToContent()
     panel.orderFrontRegardless()
-    installMouseMonitor()
     tint.start()
   }
 
   deinit {
     if let frameObserver {
       NotificationCenter.default.removeObserver(frameObserver)
-    }
-    if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
-    if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
-  }
-
-  // keep `ignoresMouseEvents` in sync with the cursor position: on when it
-  // sits inside the live bar BG, off everywhere else. runs on every mouse
-  // move system wide (cheap) because once the panel is ignoring events it
-  // cannot track its own cursor returning.
-  private func installMouseMonitor() {
-    let apply: @MainActor (NSEvent) -> Void = { [weak self] _ in
-      guard let self else { return }
-      self.updateMousePassthrough()
-    }
-    globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { event in
-      MainActor.assumeIsolated { apply(event) }
-    }
-    mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
-      MainActor.assumeIsolated { apply(event) }
-      return event
-    }
-  }
-
-  private func updateMousePassthrough() {
-    let mouse = NSEvent.mouseLocation
-    let frame = window.frame
-    let hit = hosting.hitWidth
-    // active region: panel's leading edge up to the current BG width, full
-    // panel height. mouse anywhere else = pass through.
-    let active = NSRect(x: frame.minX, y: frame.minY, width: hit, height: frame.height)
-    let inside = active.contains(mouse)
-    if window.ignoresMouseEvents != !inside {
-      window.ignoresMouseEvents = !inside
     }
   }
 
