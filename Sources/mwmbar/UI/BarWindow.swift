@@ -5,15 +5,28 @@ import SwiftUI
 /// hitWidth is updated via a preference key from the SwiftUI body.
 final class BarHostingView<Content: View>: NSHostingView<Content> {
   var hitWidth: CGFloat = 0
+  var centered: Bool = false
 
   override func hitTest(_ point: NSPoint) -> NSView? {
-    guard point.x >= 0 && point.x <= hitWidth else { return nil }
+    let w = bounds.width
+    let lo: CGFloat
+    let hi: CGFloat
+    if centered {
+      let mid = w / 2
+      lo = mid - hitWidth / 2
+      hi = mid + hitWidth / 2
+    } else {
+      lo = 0
+      hi = hitWidth
+    }
+    guard point.x >= lo && point.x <= hi else { return nil }
     return super.hitTest(point)
   }
 }
 
 @MainActor
 final class BarWindow {
+  let screenName: String
   private let window: NSPanel
   private let hosting: BarHostingView<BarWindowRoot>
   private var screen: NSScreen
@@ -21,8 +34,8 @@ final class BarWindow {
   nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
 
   init(
-    monitorId: String, screen: NSScreen, invalidator: Invalidator,
-    onSwitchWorkspace: @escaping (String, String) -> Void,
+    screen: NSScreen, screenName: String, invalidator: Invalidator,
+    onSwitchWorkspace: @escaping (String) -> Void,
     onRestoreWindow: @escaping (String) -> Void,
     onPeekEnter: @escaping (Workspace, CGFloat) -> Void,
     onPeekExit: @escaping () -> Void
@@ -43,15 +56,18 @@ final class BarWindow {
       : CGRect(x: 0, y: 0, width: 1.0, height: 0.2)
     let tint = WallpaperTint(display: displayId, cropFraction: cropFraction)
     self.tint = tint
+    let menubarH0 = screen.frame.height - screen.visibleFrame.height
+    let hasNotch0 = menubarH0 > 32
     let root = BarWindowRoot(
-      monitorId: monitorId,
+      screenName: screenName,
       invalidator: invalidator,
       tint: tint,
       onSwitchWorkspace: onSwitchWorkspace,
       onRestoreWindow: onRestoreWindow,
       onPeekEnter: onPeekEnter,
       onPeekExit: onPeekExit,
-      hostingRef: hostingRef)
+      hostingRef: hostingRef,
+      centered: !hasNotch0)
     hosting = BarHostingView(rootView: root)
     hostingRef.view = hosting
     // skip sizingOptions. NSHostingController's own resize path anchors the
@@ -59,6 +75,7 @@ final class BarWindow {
     // instead the frameDidChange handler reshapes the panel manually with a
     // left anchored setFrame.
     self.screen = screen
+    self.screenName = screenName
 
     // nonactivatingPanel keeps clicks from stealing key status from the user's focused window.
     let panel = NSPanel(
@@ -109,17 +126,17 @@ final class BarWindow {
     let hasNotch = menubarH > 32
     let h: CGFloat = 24
     let x: CGFloat
+    let w: CGFloat
     if hasNotch {
       // 110pt right of center clears the notch cutout on 14/16" MacBooks.
       x = full.origin.x + full.width / 2 + 110
+      w = max(60, full.origin.x + full.width - x)
     } else {
-      x = full.origin.x + 110
+      x = full.origin.x
+      w = full.width
     }
-    // panel spans from its anchor to the screen's right edge. SwiftUI content
-    // uses .frame(maxWidth: .infinity, alignment: .leading) so the pills live
-    // on the left and the dead space to the right stays empty.
-    let w = max(60, full.origin.x + full.width - x)
     let y = full.origin.y + full.height - menubarH + (menubarH - h) / 2
+    hosting.centered = !hasNotch
     window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
   }
 
@@ -146,23 +163,25 @@ struct BarWidthKey: PreferenceKey {
 }
 
 struct BarWindowRoot: View {
-  let monitorId: String
+  let screenName: String
   let invalidator: Invalidator
   let tint: WallpaperTint
-  let onSwitchWorkspace: (String, String) -> Void
+  let onSwitchWorkspace: (String) -> Void
   let onRestoreWindow: (String) -> Void
   let onPeekEnter: (Workspace, CGFloat) -> Void
   let onPeekExit: () -> Void
   let hostingRef: HostingRef
+  let centered: Bool
 
   var body: some View {
     BarView(
-      monitorId: monitorId,
+      screenName: screenName,
       invalidator: invalidator,
       onSwitchWorkspace: onSwitchWorkspace,
       onRestoreWindow: onRestoreWindow,
       onPeekEnter: onPeekEnter,
-      onPeekExit: onPeekExit
+      onPeekExit: onPeekExit,
+      centered: centered
     )
     .environment(invalidator.generation)
     .environment(tint)

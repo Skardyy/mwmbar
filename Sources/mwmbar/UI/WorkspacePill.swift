@@ -31,7 +31,7 @@ struct WorkspacePill: View {
 
   var body: some View {
     HStack(spacing: BarConfig.iconGap) {
-      Text(workspace.id)
+      Text((Int(workspace.id) ?? 0) >= 10 ? "~" : workspace.id)
         .font(.system(size: 11, weight: .semibold, design: .monospaced))
         .foregroundStyle(isActive ? Color.white : Color.secondary)
         .frame(width: 14, alignment: .center)

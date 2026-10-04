@@ -1,13 +1,14 @@
 import SwiftUI
 
 struct BarView: View {
-  let monitorId: String
+  let screenName: String
   let invalidator: Invalidator
   @Environment(BarGeneration.self) private var generation
-  let onSwitchWorkspace: (String, String) -> Void
+  let onSwitchWorkspace: (String) -> Void
   let onRestoreWindow: (String) -> Void
   let onPeekEnter: (Workspace, CGFloat) -> Void
   let onPeekExit: () -> Void
+  let centered: Bool
 
   var body: some View {
     // reading tick subscribes the view to snapshot commits; the let keeps
@@ -15,7 +16,7 @@ struct BarView: View {
     let _ = generation.tick
     let _ = PerfTrace.tick("barview.body")
     let snapshot = invalidator.snapshot()
-    let monitor = snapshot.monitors.first { $0.id == monitorId }
+    let monitor = snapshot.monitors.first { $0.nsScreenName == screenName }
     let visible = Self.visibleWorkspaces(monitor: monitor)
     let totalInnerW = Self.totalInnerWidth(visible: visible)
     PillsRow(
@@ -26,8 +27,8 @@ struct BarView: View {
       onRestoreWindow: onRestoreWindow,
       onPeekEnter: onPeekEnter,
       onPeekExit: onPeekExit,
-      monitorId: monitorId,
-      focusedWindowId: snapshot.focusedWindowId
+      focusedWindowId: snapshot.focusedWindowId,
+      centered: centered
     )
     .coordinateSpace(.named("bar"))
   }
@@ -52,12 +53,14 @@ private struct PillsRow: View {
   let monitor: Monitor?
   let visible: [Workspace]
   let totalInnerW: CGFloat
-  let onSwitchWorkspace: (String, String) -> Void
+  let onSwitchWorkspace: (String) -> Void
   let onRestoreWindow: (String) -> Void
   let onPeekEnter: (Workspace, CGFloat) -> Void
   let onPeekExit: () -> Void
-  let monitorId: String
   let focusedWindowId: String?
+  let centered: Bool
+
+  private var outerAlignment: Alignment { centered ? .center : .leading }
 
   var body: some View {
     HStack(spacing: 0) {
@@ -67,12 +70,12 @@ private struct PillsRow: View {
             workspace: ws,
             isActive: ws.id == monitor.focusedWorkspaceId,
             focusedWindowId: focusedWindowId,
-            onTap: { onSwitchWorkspace(ws.id, monitorId) },
+            onTap: { onSwitchWorkspace(ws.id) },
             onIconClick: { window in
               if window.isHidden {
                 onRestoreWindow(window.id)
               } else {
-                onSwitchWorkspace(ws.id, monitorId)
+                onSwitchWorkspace(ws.id)
               }
             },
             onPeekEnter: { x in onPeekEnter(ws, x) },
@@ -83,14 +86,14 @@ private struct PillsRow: View {
           .zIndex(1)
           .transition(.scale(scale: 0.3, anchor: .leading).combined(with: .opacity))
         }
-        Spacer(minLength: 0)
+        if !centered { Spacer(minLength: 0) }
       }
     }
     // bar background hugs content width while the outer frame stays wide.
     // keeping the HStack at a fixed outer width stops it from retuning its
     // intrinsic size inside the spring animation, which would otherwise
     // jitter pill positions.
-    .background(alignment: .leading) {
+    .background(alignment: centered ? .center : .leading) {
       RoundedRectangle(cornerRadius: BarConfig.containerCorner, style: .continuous)
         .fill(.ultraThinMaterial)
         .overlay(
@@ -99,7 +102,10 @@ private struct PillsRow: View {
         )
         .frame(width: totalInnerW, height: 24)
     }
-    .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24, alignment: .leading)
+    .frame(
+      maxWidth: .infinity, minHeight: 24, maxHeight: 24,
+      alignment: outerAlignment
+    )
     // publish bg width so clicks outside it pass through to menubar items
     // underneath.
     .preference(key: BarWidthKey.self, value: totalInnerW)

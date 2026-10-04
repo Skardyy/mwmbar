@@ -56,9 +56,6 @@ final class WallpaperTint {
     }
   }
 
-  deinit {
-    MainActor.assumeIsolated { self.stop() }
-  }
 }
 
 /// SCK based desktop pixel grab. filter excludes every running app so only

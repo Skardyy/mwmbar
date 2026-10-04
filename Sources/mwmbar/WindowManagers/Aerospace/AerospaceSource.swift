@@ -56,7 +56,7 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
     }
   }
 
-  func switchWorkspace(id: String, monitorId: String) {
+  func switchWorkspace(id: String) {
     cmd.send(args: ["workspace", id]) { r in
       if case .failure(let e) = r {
         Log.source.warning("aerospace workspace \(id) failed: \(String(describing: e))")
@@ -151,7 +151,7 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
     var monitorOrder: [Int] = []
     for m in monitors {
       monitorById[m.id] = Monitor(
-        id: String(m.id), nsScreenName: m.name,
+        nsScreenName: m.name,
         workspaces: [], focusedWorkspaceId: nil)
       monitorOrder.append(m.id)
     }
