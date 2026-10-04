@@ -26,7 +26,7 @@ final class PeekPanel {
     p.hasShadow = false
     p.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue - 1)
     p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .transient]
-    p.contentViewController = hosting
+    p.contentView = hosting.view
     p.ignoresMouseEvents = true
     panel = p
     reshape()
@@ -59,9 +59,15 @@ final class PeekPanel {
   private func reshape() {
     let full = screen.frame
     let menubarH = full.height - screen.visibleFrame.height
-    let w = min(full.width * 0.4, 600)
-    let h = w * 9 / 16
-    // center the panel on the hovered pill, clamping so it stays on screen.
+    let h = min(full.height * 0.35, 500)
+    let imgAspect: CGFloat = {
+      if let sz = state.image?.size, sz.width > 0, sz.height > 0 {
+        return sz.width / sz.height
+      }
+      return 16.0 / 9.0
+    }()
+    let maxW = min(full.width * 0.6, 1200)
+    let w = min(h * imgAspect, maxW)
     var x = anchorCenterX - w / 2
     let minX = full.origin.x + 8
     let maxX = full.origin.x + full.width - w - 8
