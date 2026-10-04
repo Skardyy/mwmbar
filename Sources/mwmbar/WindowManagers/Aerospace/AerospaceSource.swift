@@ -56,6 +56,10 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
     }
   }
 
+  func refresh() {
+    scheduleRefresh()
+  }
+
   func switchWorkspace(id: String) {
     cmd.send(args: ["workspace", id]) { r in
       if case .failure(let e) = r {

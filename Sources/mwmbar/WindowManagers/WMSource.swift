@@ -3,4 +3,5 @@ protocol WMSource: AnyObject, Sendable {
   /// signal.
   func start(invalidator: Invalidator)
   func switchWorkspace(id: String)
+  func refresh()
 }

@@ -11,6 +11,7 @@ final class BarController {
   private let peekPref = PeekPreference()
   private lazy var cpu = CpuStatItem(peekPref: peekPref)
   nonisolated(unsafe) private var middleClickMonitor: Any?
+  nonisolated(unsafe) private var screenParamsObserver: NSObjectProtocol?
 
   private static func makeSource() -> any WMSource {
     AerospaceSource()
@@ -30,8 +31,18 @@ final class BarController {
       }
     }
     installMiddleClickMonitor()
+    installScreenParamsObserver()
     syncWindows()
     installPerfCounterDump()
+  }
+
+  private func installScreenParamsObserver() {
+    screenParamsObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.source?.refresh() }
+    }
   }
 
   // periodic counter flush so a reader can see throughput buckets without
@@ -57,6 +68,7 @@ final class BarController {
 
   deinit {
     if let middleClickMonitor { NSEvent.removeMonitor(middleClickMonitor) }
+    if let screenParamsObserver { NotificationCenter.default.removeObserver(screenParamsObserver) }
   }
 
   private func syncWindows() {
