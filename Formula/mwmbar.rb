@@ -1,8 +1,8 @@
 class Mwmbar < Formula
   desc "Aerospace workspace pills bar for macOS"
   homepage "https://github.com/Skardyy/mwmbar"
-  url "https://github.com/Skardyy/mwmbar/archive/refs/tags/0.3.0.tar.gz"
-  sha256 "0771de6d078ae475e6bfe446ec1f9d7fc7d0443c113c9a1792dd987f93efa597"
+  url "https://github.com/Skardyy/mwmbar/archive/refs/tags/0.4.0.tar.gz"
+  sha256 "2b9585f31d7b7056d033e509347c880c69eab5f6bc8d5f5425ee369c62487462"
   head "https://github.com/Skardyy/mwmbar.git", branch: "master"
 
   depends_on :macos
