@@ -11,9 +11,7 @@ struct BarSnapshot: Sendable, Equatable {
   static let empty = BarSnapshot(monitors: [], focusedWindowId: nil)
 }
 
-/// reference wrapped snapshot so the atomic swap works on a single word.
-/// box is immutable; only the atomic reference ever changes.
-private final class SnapshotBox: @unchecked Sendable {
+private final class SnapshotBox: AtomicReference, @unchecked Sendable {
   let value: BarSnapshot
   init(_ value: BarSnapshot) { self.value = value }
 }
@@ -33,11 +31,7 @@ final class Invalidator: @unchecked Sendable {
   @MainActor var onLifecycleChange: (() -> Void)?
 
   nonisolated(unsafe) let tracker: CompositorTracker
-  /// atomic reference to the live SnapshotBox (held as UInt bit pattern).
-  /// readers do a lock free load; writers passRetained a new box, atomic
-  /// exchange, then release the old box on main so readers (always on
-  /// main) never dereference a freed pointer within the same runloop.
-  private let snapshotPtr: ManagedAtomic<UInt>
+  private let snapshotRef: ManagedAtomic<SnapshotBox>
   private let state = OSAllocatedUnfairLock(initialState: State())
   private let queue = DispatchQueue(label: "mwmbar.invalidator", qos: .userInteractive)
 
@@ -54,9 +48,7 @@ final class Invalidator: @unchecked Sendable {
   @MainActor init() {
     self.generation = BarGeneration()
     self.tracker = CompositorTracker()
-    let box = SnapshotBox(.empty)
-    let raw = Unmanaged.passRetained(box).toOpaque()
-    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
+    self.snapshotRef = ManagedAtomic<SnapshotBox>(SnapshotBox(.empty))
     tracker.onChange = { [weak self] in
       MainActor.assumeIsolated {
         self?.onLifecycleChange?()
@@ -68,24 +60,12 @@ final class Invalidator: @unchecked Sendable {
     }
   }
 
-  deinit {
-    let raw = snapshotPtr.load(ordering: .relaxed)
-    if let ptr = UnsafeRawPointer(bitPattern: raw) {
-      Unmanaged<SnapshotBox>.fromOpaque(ptr).release()
-    }
-  }
-
   @MainActor func start() {
     tracker.start()
   }
 
-  /// lock free load of the current snapshot. main actor only so the box
-  /// cannot be freed under the reader; writers defer old box release to
-  /// main for the same reason.
   @MainActor func snapshot() -> BarSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<SnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
+    snapshotRef.load(ordering: .acquiring).value
   }
 
   func submit(monitors: [Monitor], focusedWindowId: String? = nil) {
@@ -182,23 +162,14 @@ final class Invalidator: @unchecked Sendable {
   }
 
   private func commit(_ snap: BarSnapshot) {
-    // equality check outside the swap; safe to dereference the current
-    // box here because commits are serialized on invalidator.queue and
-    // only prior (not current) boxes are ever queued for release.
-    let currentRaw = snapshotPtr.load(ordering: .acquiring)
-    if let currentPtr = UnsafeRawPointer(bitPattern: currentRaw) {
-      let currentValue =
-        Unmanaged<SnapshotBox>.fromOpaque(currentPtr).takeUnretainedValue().value
-      if currentValue == snap {
-        PerfTrace.incr("invalidator.commit.noop")
-        return
-      }
+    // equality check against the current snapshot; commits are serialized
+    // on invalidator.queue so no racing writer swaps it mid comparison.
+    if snapshotRef.load(ordering: .acquiring).value == snap {
+      PerfTrace.incr("invalidator.commit.noop")
+      return
     }
 
-    let newBox = SnapshotBox(snap)
-    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
-    let oldRawInt = snapshotPtr.exchange(
-      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
+    snapshotRef.store(SnapshotBox(snap), ordering: .releasing)
 
     PerfTrace.incr("invalidator.commit")
     PerfTrace.mark("invalidator.commit")
@@ -211,13 +182,6 @@ final class Invalidator: @unchecked Sendable {
           + "win=\(snap.focusedWindowId ?? "nil") \(ids)")
     }
     let gen = generation
-    Task { @MainActor in
-      // release the old box only after the main runloop has yielded past
-      // any snapshot reader that was mid flight at exchange time.
-      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
-        Unmanaged<SnapshotBox>.fromOpaque(oldPtr).release()
-      }
-      gen.tick &+= 1
-    }
+    Task { @MainActor in gen.tick &+= 1 }
   }
 }

@@ -43,60 +43,35 @@ final class NetworkGeneration {
   var tick: UInt64 = 0
 }
 
-private final class NetworkSnapshotBox: @unchecked Sendable {
+private final class NetworkSnapshotBox: AtomicReference, @unchecked Sendable {
   let value: NetworkSnapshot
   init(_ value: NetworkSnapshot) { self.value = value }
 }
 
 final class NetworkStore: @unchecked Sendable {
   let generation: NetworkGeneration
-  private let snapshotPtr: ManagedAtomic<UInt>
+  private let snapshotRef: ManagedAtomic<NetworkSnapshotBox>
 
   @MainActor init() {
     self.generation = NetworkGeneration()
-    let box = NetworkSnapshotBox(NetworkSnapshot())
-    let raw = Unmanaged.passRetained(box).toOpaque()
-    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
-  }
-
-  deinit {
-    let raw = snapshotPtr.load(ordering: .relaxed)
-    if let ptr = UnsafeRawPointer(bitPattern: raw) {
-      Unmanaged<NetworkSnapshotBox>.fromOpaque(ptr).release()
-    }
+    self.snapshotRef = ManagedAtomic<NetworkSnapshotBox>(NetworkSnapshotBox(NetworkSnapshot()))
   }
 
   @MainActor func snapshot() -> NetworkSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<NetworkSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
+    snapshotRef.load(ordering: .acquiring).value
   }
 
   func commit(_ snap: NetworkSnapshot) {
-    let newBox = NetworkSnapshotBox(snap)
-    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
-    let oldRawInt = snapshotPtr.exchange(
-      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
+    snapshotRef.store(NetworkSnapshotBox(snap), ordering: .releasing)
     let gen = generation
-    Task { @MainActor in
-      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
-        Unmanaged<NetworkSnapshotBox>.fromOpaque(oldPtr).release()
-      }
-      gen.tick &+= 1
-    }
+    Task { @MainActor in gen.tick &+= 1 }
   }
 
   /// read, apply, commit. callers must serialize to avoid lost writes.
   func patch(_ apply: (inout NetworkSnapshot) -> Void) {
-    var snap = currentForWriter()
+    var snap = snapshotRef.load(ordering: .acquiring).value
     apply(&snap)
     commit(snap)
-  }
-
-  private func currentForWriter() -> NetworkSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<NetworkSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
   }
 }
 

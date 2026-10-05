@@ -20,47 +20,28 @@ final class ServiceGeneration {
   var tick: UInt64 = 0
 }
 
-private final class ServiceSnapshotBox: @unchecked Sendable {
+private final class ServiceSnapshotBox: AtomicReference, @unchecked Sendable {
   let value: ServiceSnapshot
   init(_ value: ServiceSnapshot) { self.value = value }
 }
 
 final class ServiceStore: @unchecked Sendable {
   let generation: ServiceGeneration
-  private let snapshotPtr: ManagedAtomic<UInt>
+  private let snapshotRef: ManagedAtomic<ServiceSnapshotBox>
 
   @MainActor init() {
     self.generation = ServiceGeneration()
-    let box = ServiceSnapshotBox(ServiceSnapshot())
-    let raw = Unmanaged.passRetained(box).toOpaque()
-    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
-  }
-
-  deinit {
-    let raw = snapshotPtr.load(ordering: .relaxed)
-    if let ptr = UnsafeRawPointer(bitPattern: raw) {
-      Unmanaged<ServiceSnapshotBox>.fromOpaque(ptr).release()
-    }
+    self.snapshotRef = ManagedAtomic<ServiceSnapshotBox>(ServiceSnapshotBox(ServiceSnapshot()))
   }
 
   @MainActor func snapshot() -> ServiceSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<ServiceSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
+    snapshotRef.load(ordering: .acquiring).value
   }
 
   func commit(_ snap: ServiceSnapshot) {
-    let newBox = ServiceSnapshotBox(snap)
-    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
-    let oldRawInt = snapshotPtr.exchange(
-      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
+    snapshotRef.store(ServiceSnapshotBox(snap), ordering: .releasing)
     let gen = generation
-    Task { @MainActor in
-      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
-        Unmanaged<ServiceSnapshotBox>.fromOpaque(oldPtr).release()
-      }
-      gen.tick &+= 1
-    }
+    Task { @MainActor in gen.tick &+= 1 }
   }
 }
 

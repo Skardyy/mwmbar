@@ -24,50 +24,29 @@ final class SystemGeneration {
   var tick: UInt64 = 0
 }
 
-/// reference wrapped snapshot so the atomic swap works on a single word.
-private final class SystemSnapshotBox: @unchecked Sendable {
+private final class SystemSnapshotBox: AtomicReference, @unchecked Sendable {
   let value: SystemSnapshot
   init(_ value: SystemSnapshot) { self.value = value }
 }
 
-/// atomic snapshot store. writers passRetained a new box and exchange;
-/// readers (main only) load lock free. old boxes are released on main so
-/// no reader can dereference a freed pointer in the same runloop cycle.
+/// atomic snapshot store. writers swap in a new box via AtomicReference;
+/// readers load lock free. ARC releases the old box after the swap.
 final class SystemStore: @unchecked Sendable {
   let generation: SystemGeneration
-  private let snapshotPtr: ManagedAtomic<UInt>
+  private let snapshotRef: ManagedAtomic<SystemSnapshotBox>
 
   @MainActor init() {
     self.generation = SystemGeneration()
-    let box = SystemSnapshotBox(SystemSnapshot())
-    let raw = Unmanaged.passRetained(box).toOpaque()
-    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
-  }
-
-  deinit {
-    let raw = snapshotPtr.load(ordering: .relaxed)
-    if let ptr = UnsafeRawPointer(bitPattern: raw) {
-      Unmanaged<SystemSnapshotBox>.fromOpaque(ptr).release()
-    }
+    self.snapshotRef = ManagedAtomic<SystemSnapshotBox>(SystemSnapshotBox(SystemSnapshot()))
   }
 
   @MainActor func snapshot() -> SystemSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<SystemSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
+    snapshotRef.load(ordering: .acquiring).value
   }
 
   func commit(_ snap: SystemSnapshot) {
-    let newBox = SystemSnapshotBox(snap)
-    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
-    let oldRawInt = snapshotPtr.exchange(
-      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
+    snapshotRef.store(SystemSnapshotBox(snap), ordering: .releasing)
     let gen = generation
-    Task { @MainActor in
-      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
-        Unmanaged<SystemSnapshotBox>.fromOpaque(oldPtr).release()
-      }
-      gen.tick &+= 1
-    }
+    Task { @MainActor in gen.tick &+= 1 }
   }
 }
