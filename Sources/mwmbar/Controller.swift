@@ -12,6 +12,7 @@ final class BarController {
   private lazy var cpu = CpuStatItem(peekPref: peekPref)
   nonisolated(unsafe) private var middleClickMonitor: Any?
   nonisolated(unsafe) private var screenParamsObserver: NSObjectProtocol?
+  nonisolated(unsafe) private var wakeObserver: NSObjectProtocol?
 
   private static func makeSource() -> any WMSource {
     AerospaceSource()
@@ -32,8 +33,22 @@ final class BarController {
     }
     installMiddleClickMonitor()
     installScreenParamsObserver()
+    installWakeObserver()
     syncWindows()
     installPerfCounterDump()
+  }
+
+  private func installWakeObserver() {
+    wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didWakeNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.source?.refresh()
+        self.invalidator.tracker.rescanAll()
+      }
+    }
   }
 
   private func installScreenParamsObserver() {
@@ -69,6 +84,9 @@ final class BarController {
   deinit {
     if let middleClickMonitor { NSEvent.removeMonitor(middleClickMonitor) }
     if let screenParamsObserver { NotificationCenter.default.removeObserver(screenParamsObserver) }
+    if let wakeObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+    }
   }
 
   private func syncWindows() {

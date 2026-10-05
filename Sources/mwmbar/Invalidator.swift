@@ -32,7 +32,7 @@ final class Invalidator: @unchecked Sendable {
   let generation: BarGeneration
   @MainActor var onLifecycleChange: (() -> Void)?
 
-  nonisolated(unsafe) private let tracker: CompositorTracker
+  nonisolated(unsafe) let tracker: CompositorTracker
   /// atomic reference to the live SnapshotBox (held as UInt bit pattern).
   /// readers do a lock free load; writers passRetained a new box, atomic
   /// exchange, then release the old box on main so readers (always on

@@ -109,6 +109,8 @@ extension CompositorTracker {
     hidden.removeAll()
   }
 
+  func rescanAll() { scheduleRescan(pid: nil) }
+
   /// pass nil pid for a full rescan (startup / app join / app terminate).
   /// pass a pid for a targeted rescan of just that app's windows.
   private func scheduleRescan(pid: pid_t? = nil) {
