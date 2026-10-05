@@ -1,9 +1,10 @@
 import Darwin
 import Foundation
 
-/// one snapshot of a running process. cpuPercent is normalised to a single
-/// core so the number matches Activity Monitor's default view (a 100 percent
-/// value means one hw thread is fully pinned).
+/// one snapshot of a running process. cpuPercent is normalised against the
+/// whole machine so values across all processes sum to the overall busy
+/// percent (0-100). a value of 100 means every hw thread is pinned by this
+/// one process.
 struct ProcInfo: Identifiable, Hashable, Sendable {
   let id: pid_t
   let name: String
@@ -30,6 +31,7 @@ final class ProcessSampler: @unchecked Sendable {
     let pids = Self.allPids()
     let now = mach_absolute_time()
     let timebase = Self.timebase
+    let cores = Double(max(1, ProcessInfo.processInfo.activeProcessorCount))
     var out: [ProcInfo] = []
     var nextPrev: [pid_t: Prev] = [:]
     out.reserveCapacity(pids.count)
@@ -43,7 +45,7 @@ final class ProcessSampler: @unchecked Sendable {
         let dCpu = totalCpuNs &- prev.cpuNs
         let dWall = (now &- prev.timestamp) * UInt64(timebase.numer) / UInt64(timebase.denom)
         if dWall > 0 {
-          cpuPercent = Double(dCpu) / Double(dWall) * 100.0
+          cpuPercent = Double(dCpu) / Double(dWall) * 100.0 / cores
         }
       }
       nextPrev[pid] = Prev(cpuNs: totalCpuNs, timestamp: now)
