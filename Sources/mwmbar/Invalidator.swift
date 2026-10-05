@@ -30,7 +30,7 @@ final class Invalidator: @unchecked Sendable {
   let generation: BarGeneration
   @MainActor var onLifecycleChange: (() -> Void)?
 
-  nonisolated(unsafe) let tracker: CompositorTracker
+  let tracker: CompositorTracker
   private let snapshotRef: ManagedAtomic<SnapshotBox>
   private let state = OSAllocatedUnfairLock(initialState: State())
   private let queue = DispatchQueue(label: "mwmbar.invalidator", qos: .userInteractive)

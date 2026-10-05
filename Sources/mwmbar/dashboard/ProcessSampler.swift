@@ -67,7 +67,7 @@ final class ProcessSampler: @unchecked Sendable {
     _ = Darwin.kill(pid, force ? SIGKILL : SIGTERM)
   }
 
-  nonisolated(unsafe) private static let timebase: mach_timebase_info_data_t = {
+  private static let timebase: mach_timebase_info_data_t = {
     var tb = mach_timebase_info_data_t()
     mach_timebase_info(&tb)
     return tb
@@ -134,7 +134,7 @@ final class ProcessSampler: @unchecked Sendable {
     var buf = [CChar](repeating: 0, count: 4096)
     let n = proc_pidpath(pid, &buf, UInt32(buf.count))
     guard n > 0 else { return false }
-    let path = String(cString: buf)
+    let path = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
     return path.hasPrefix("/System/") || path.hasPrefix("/usr/libexec/")
       || path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/")
       || path.hasPrefix("/Library/Apple/") || path.hasPrefix("/Library/PrivilegedHelperTools/")

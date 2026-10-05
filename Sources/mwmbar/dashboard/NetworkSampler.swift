@@ -63,7 +63,8 @@ final class NetworkSampler: @unchecked Sendable {
           addr, socklen_t(addr.pointee.sa_len), &buf, socklen_t(buf.count),
           nil, 0, NI_NUMERICHOST) == 0
       else { continue }
-      out.append(Iface(name: name, ip: String(cString: buf)))
+      let ip = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+      out.append(Iface(name: name, ip: ip))
     }
     return out
   }

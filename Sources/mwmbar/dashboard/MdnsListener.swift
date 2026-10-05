@@ -224,5 +224,6 @@ private func addrCallback(
       addr, socklen_t(addr.pointee.sa_len), &buf, socklen_t(buf.count),
       nil, 0, NI_NUMERICHOST) == 0
   else { return }
-  ctx.parent.deliver(ip: String(cString: buf), hostname: ctx.host, type: ctx.type)
+  let ip = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+  ctx.parent.deliver(ip: ip, hostname: ctx.host, type: ctx.type)
 }
