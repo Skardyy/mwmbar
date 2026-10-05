@@ -1,15 +1,5 @@
 import AppKit
-import Atomics
-import Observation
 import SwiftUI
-
-struct SystemLoad: Equatable, Sendable {
-  var cpuBusy: Double = 0
-  var memUsedBytes: UInt64 = 0
-  var memTotalBytes: UInt64 = 1
-  var coreCount: Int = 1
-  var memUsedFraction: Double { Double(memUsedBytes) / Double(memTotalBytes) }
-}
 
 enum ProcFilter: String, CaseIterable, Identifiable {
   case all = "All"
@@ -20,125 +10,15 @@ enum ProcFilter: String, CaseIterable, Identifiable {
 
 enum SortColumn { case name, cpu, memory }
 
-/// immutable sample snapshot; written off main, read on main.
-struct CpuSnapshot: Sendable {
-  var load: SystemLoad = SystemLoad()
-  var procs: [ProcInfo] = []
-}
-
-/// observation trigger bumped after every snapshot commit so views can
-/// resubscribe.
-@MainActor
-@Observable
-final class CpuGeneration {
-  var tick: UInt64 = 0
-}
-
-/// reference wrapped snapshot so the atomic swap works on a single word.
-private final class CpuSnapshotBox: @unchecked Sendable {
-  let value: CpuSnapshot
-  init(_ value: CpuSnapshot) { self.value = value }
-}
-
-/// atomic snapshot store. writers passRetained a new box and exchange;
-/// readers (main only) load lock free. old boxes are released on main so
-/// no reader can dereference a freed pointer in the same runloop cycle.
-final class CpuStore: @unchecked Sendable {
-  let generation: CpuGeneration
-  private let snapshotPtr: ManagedAtomic<UInt>
-
-  @MainActor init() {
-    self.generation = CpuGeneration()
-    let box = CpuSnapshotBox(CpuSnapshot())
-    let raw = Unmanaged.passRetained(box).toOpaque()
-    self.snapshotPtr = ManagedAtomic<UInt>(UInt(bitPattern: raw))
-  }
-
-  deinit {
-    let raw = snapshotPtr.load(ordering: .relaxed)
-    if let ptr = UnsafeRawPointer(bitPattern: raw) {
-      Unmanaged<CpuSnapshotBox>.fromOpaque(ptr).release()
-    }
-  }
-
-  @MainActor func snapshot() -> CpuSnapshot {
-    let raw = snapshotPtr.load(ordering: .acquiring)
-    let ptr = UnsafeRawPointer(bitPattern: raw)!
-    return Unmanaged<CpuSnapshotBox>.fromOpaque(ptr).takeUnretainedValue().value
-  }
-
-  func commit(_ snap: CpuSnapshot) {
-    let newBox = CpuSnapshotBox(snap)
-    let newRaw = Unmanaged.passRetained(newBox).toOpaque()
-    let oldRawInt = snapshotPtr.exchange(
-      UInt(bitPattern: newRaw), ordering: .acquiringAndReleasing)
-    let gen = generation
-    Task { @MainActor in
-      if let oldPtr = UnsafeRawPointer(bitPattern: oldRawInt) {
-        Unmanaged<CpuSnapshotBox>.fromOpaque(oldPtr).release()
-      }
-      gen.tick &+= 1
-    }
-  }
-}
-
-@MainActor
-@Observable
-final class CpuDashboardModel {
-  var filter: ProcFilter = .all
-  var sortColumn: SortColumn = .cpu
-  var sortAsc = false
-  var search = ""
-
-  /// filter + sort + search is cheap on 500 ish items so it runs every
-  /// render; memoising it against the latest snapshot would stale faster
-  /// than it would save frame time.
-  func filtered(_ procs: [ProcInfo]) -> [ProcInfo] {
-    let base: [ProcInfo]
-    switch filter {
-    case .all: base = procs
-    case .user: base = procs.filter { !$0.isSystem }
-    case .system: base = procs.filter { $0.isSystem }
-    }
-    let searched =
-      search.isEmpty
-      ? base
-      : base.filter { $0.name.localizedCaseInsensitiveContains(search) }
-    let ordered: [ProcInfo]
-    switch sortColumn {
-    case .name:
-      ordered = searched.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
-    case .cpu:
-      ordered = searched.sorted { $0.cpuPercent > $1.cpuPercent }
-    case .memory:
-      ordered = searched.sorted { $0.rssBytes > $1.rssBytes }
-    }
-    return sortAsc ? ordered.reversed() : ordered
-  }
-
-  // tap same column flips direction; tap new column resets to descending.
-  // descending is the useful default for cpu + memory (busy processes at
-  // the top); name picks it up too for consistency.
-  func toggleSort(_ col: SortColumn) {
-    if sortColumn == col {
-      sortAsc.toggle()
-    } else {
-      sortColumn = col
-      sortAsc = false
-    }
-  }
-}
-
-struct CpuDashboard: View {
-  @Bindable var model: CpuDashboardModel
+struct SystemTab: View {
+  @Bindable var model: DashboardModel
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
-  let store: CpuStore
-  @Environment(CpuGeneration.self) private var generation
+  let store: SystemStore
+  @Environment(SystemGeneration.self) private var generation
   let onKill: (pid_t, Bool) -> Void
 
   var body: some View {
-    // reading tick subscribes the view to snapshot commits.
     let _ = generation.tick
     let snapshot = store.snapshot()
     VStack(spacing: 10) {
@@ -149,10 +29,6 @@ struct CpuDashboard: View {
       columnHeader
       list(procs: snapshot.procs)
     }
-    .padding(10)
-    .frame(
-      minWidth: 460, idealWidth: 520, maxWidth: 760,
-      minHeight: 420, idealHeight: 520, maxHeight: 820)
   }
 
   private func header(load: SystemLoad) -> some View {
@@ -226,7 +102,7 @@ struct CpuDashboard: View {
 }
 
 private struct FilterSegment: View {
-  @Bindable var model: CpuDashboardModel
+  @Bindable var model: DashboardModel
 
   var body: some View {
     HStack(spacing: 2) {
@@ -245,41 +121,6 @@ private struct FilterSegment: View {
 }
 
 @MainActor
-private final class ChipHover: ObservableObject {
-  @Published var value = false
-}
-
-private struct FilterChip: View {
-  let label: String
-  let selected: Bool
-  let action: () -> Void
-  @StateObject private var hover = ChipHover()
-
-  var body: some View {
-    Button(action: action) {
-      Text(label)
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(selected ? Color.primary : .secondary)
-        .padding(.vertical, 4)
-        .padding(.horizontal, 12)
-        .background(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(fill)
-        )
-    }
-    .buttonStyle(.plain)
-    .onHover { hover.value = $0 }
-    .animation(.easeOut(duration: 0.12), value: hover.value)
-    .animation(.easeOut(duration: 0.12), value: selected)
-  }
-
-  private var fill: Color {
-    if selected { return Color.primary.opacity(0.14) }
-    return hover.value ? Color.primary.opacity(0.08) : .clear
-  }
-}
-
-@MainActor
 private final class HeaderHover: ObservableObject {
   @Published var value = false
 }
@@ -287,7 +128,7 @@ private final class HeaderHover: ObservableObject {
 private struct SortHeader: View {
   let label: String
   let column: SortColumn
-  @Bindable var model: CpuDashboardModel
+  @Bindable var model: DashboardModel
   @StateObject private var hover = HeaderHover()
   // caller controls alignment via trailing / leading. the chevron slot is
   // always reserved so the label does not jump when active toggles.

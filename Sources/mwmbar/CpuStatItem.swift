@@ -11,11 +11,15 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private var prev: HostCpuLoadInfo?
 
   private let popover = NSPopover()
-  private let model = CpuDashboardModel()
-  private let store = CpuStore()
+  private let model = DashboardModel()
+  private let store = SystemStore()
   private let caffeine = CaffeineController()
   private let peekPref: PeekPreference
   private let sampler = ProcessSampler()
+  private let serviceSampler = ServiceSampler()
+  private let serviceStore = ServiceStore()
+  private lazy var serviceRefresher = ServiceRefresher(
+    store: serviceStore, sampler: serviceSampler)
   private var sampleTimer: Timer?
   private let sampleQueue = DispatchQueue(label: "mwmbar.cpu.sampler", qos: .userInitiated)
   private var caffeineObserver: AnyCancellable?
@@ -58,13 +62,18 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     popover.behavior = .transient
     popover.delegate = self
     let host = NSHostingController(
-      rootView: CpuDashboard(
+      rootView: Dashboard(
         model: model, caffeine: caffeine, peekPref: peekPref, store: store,
+        serviceStore: serviceStore,
         onKill: { [weak self] pid, force in
           self?.sampler.kill(pid: pid, force: force)
+        },
+        onServiceAction: { [weak self] action in
+          self?.handleServiceAction(action)
         }
       )
-      .environment(store.generation))
+      .environment(store.generation)
+      .environment(serviceStore.generation))
     popover.contentViewController = host
     // repaint the menubar label whenever caffeine toggles so the tint can
     // reflect it live without waiting for the next 2s cpu tick.
@@ -77,6 +86,20 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     tickTitle()
     titleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.tickTitle() }
+    }
+    serviceRefresher.start()
+  }
+
+  private func handleServiceAction(_ action: ServiceAction) {
+    let sampler = serviceSampler
+    let refresher = serviceRefresher
+    DispatchQueue.global(qos: .userInitiated).async {
+      switch action {
+      case .start(let label): sampler.start(label: label)
+      case .stop(let label): sampler.stop(label: label)
+      case .restart(let label): sampler.restart(label: label)
+      }
+      refresher.kick()
     }
   }
 
@@ -142,7 +165,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
         memUsedBytes: HostMemoryInfo.usedBytes(),
         memTotalBytes: HostMemoryInfo.totalBytes(),
         coreCount: cores)
-      store.commit(CpuSnapshot(load: load, procs: procs))
+      store.commit(SystemSnapshot(load: load, procs: procs))
     }
   }
 
