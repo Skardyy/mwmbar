@@ -100,6 +100,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     let refresher = serviceRefresher
     DispatchQueue.global(qos: .userInitiated).async {
       switch action {
+      case .enable(let label, let path): sampler.enable(label: label, plistPath: path)
+      case .disable(let label): sampler.disable(label: label)
       case .start(let label): sampler.start(label: label)
       case .stop(let label): sampler.stop(label: label)
       case .restart(let label): sampler.restart(label: label)

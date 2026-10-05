@@ -7,6 +7,8 @@ struct ServiceSnapshot: Sendable {
 }
 
 enum ServiceAction: Sendable {
+  case enable(String, String)
+  case disable(String)
   case start(String)
   case stop(String)
   case restart(String)

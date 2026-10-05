@@ -88,9 +88,17 @@ struct ServicesTab: View {
       ? base
       : base.filter { $0.label.localizedCaseInsensitiveContains(model.serviceSearch) }
     return searched.sorted { a, b in
-      if a.isRunning != b.isRunning { return a.isRunning }
+      if a.state != b.state { return Self.stateRank(a.state) < Self.stateRank(b.state) }
       if a.kind != b.kind { return Self.kindRank(a.kind) < Self.kindRank(b.kind) }
       return a.label.localizedCompare(b.label) == .orderedAscending
+    }
+  }
+
+  private static func stateRank(_ s: ServiceInfo.State) -> Int {
+    switch s {
+    case .running: return 0
+    case .loadedStopped: return 1
+    case .unloaded: return 2
     }
   }
 
@@ -110,11 +118,12 @@ private struct ServiceRow: View {
   var body: some View {
     HStack(spacing: 6) {
       Circle()
-        .fill(service.isRunning ? Color.green : Color.secondary.opacity(0.4))
+        .fill(stateColor)
         .frame(width: 7, height: 7)
       Text(service.label)
         .lineLimit(1).truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(service.state == .unloaded ? .secondary : .primary)
       Text(service.pid.map(String.init) ?? "-")
         .frame(width: 60, alignment: .trailing)
         .monospacedDigit()
@@ -132,10 +141,32 @@ private struct ServiceRow: View {
         .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
     )
     .onHover { hover.value = $0 }
-    .contextMenu {
+    .contextMenu { menu }
+  }
+
+  @ViewBuilder
+  private var menu: some View {
+    switch service.state {
+    case .unloaded:
+      if let path = service.plistPath {
+        Button("Enable (bootstrap)") { onAction(.enable(service.label, path)) }
+      }
+    case .loadedStopped:
       Button("Start") { onAction(.start(service.label)) }
+      Button("Restart") { onAction(.restart(service.label)) }
+      Button("Disable (bootout)") { onAction(.disable(service.label)) }
+    case .running:
       Button("Stop") { onAction(.stop(service.label)) }
       Button("Restart") { onAction(.restart(service.label)) }
+      Button("Disable (bootout)") { onAction(.disable(service.label)) }
+    }
+  }
+
+  private var stateColor: Color {
+    switch service.state {
+    case .running: return .green
+    case .loadedStopped: return .orange
+    case .unloaded: return .secondary.opacity(0.4)
     }
   }
 
