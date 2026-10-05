@@ -5,6 +5,7 @@ import SwiftUI
 enum DashboardTab: String, CaseIterable, Identifiable {
   case system = "System"
   case services = "Services"
+  case network = "Network"
   var id: String { rawValue }
 }
 
@@ -62,8 +63,10 @@ struct Dashboard: View {
   @ObservedObject var peekPref: PeekPreference
   let store: SystemStore
   let serviceStore: ServiceStore
+  let networkStore: NetworkStore
   let onKill: (pid_t, Bool) -> Void
   let onServiceAction: (ServiceAction) -> Void
+  let onNetworkScan: () -> Void
 
   var body: some View {
     VStack(spacing: 10) {
@@ -76,6 +79,8 @@ struct Dashboard: View {
             model: model, caffeine: caffeine, peekPref: peekPref, store: store, onKill: onKill)
         case .services:
           ServicesTab(model: model, store: serviceStore, onAction: onServiceAction)
+        case .network:
+          NetworkTab(store: networkStore, onScan: onNetworkScan)
         }
       }
     }

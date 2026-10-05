@@ -62,14 +62,14 @@ final class ServiceStore: @unchecked Sendable {
   }
 }
 
-/// drives ServiceStore from a background queue. owns the sampler and
-/// debounces refresh requests so bursty actions (start / stop / restart)
-/// coalesce into a single launchctl list call.
+/// drives ServiceStore from a background timer. start / stop controlled by
+/// the owner so the loop only runs while the services tab is visible.
 final class ServiceRefresher: @unchecked Sendable {
   private let store: ServiceStore
   private let sampler: ServiceSampler
   private let queue = DispatchQueue(label: "mwmbar.services", qos: .utility)
   private let interval: TimeInterval
+  private var timer: DispatchSourceTimer?
 
   init(store: ServiceStore, sampler: ServiceSampler, interval: TimeInterval = 5.0) {
     self.store = store
@@ -78,20 +78,23 @@ final class ServiceRefresher: @unchecked Sendable {
   }
 
   func start() {
-    queue.async { [weak self] in self?.loop() }
+    stop()
+    let t = DispatchSource.makeTimerSource(queue: queue)
+    t.schedule(deadline: .now(), repeating: interval)
+    t.setEventHandler { [weak self] in self?.refreshOnce() }
+    t.resume()
+    timer = t
+  }
+
+  func stop() {
+    timer?.cancel()
+    timer = nil
   }
 
   /// request an immediate refresh outside the periodic cadence. use after a
   /// start / stop / restart so the UI reflects new state quickly.
   func kick() {
     queue.async { [weak self] in self?.refreshOnce() }
-  }
-
-  private func loop() {
-    while true {
-      refreshOnce()
-      Thread.sleep(forTimeInterval: interval)
-    }
   }
 
   private func refreshOnce() {

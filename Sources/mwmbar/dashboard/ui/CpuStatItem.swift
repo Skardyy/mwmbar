@@ -20,6 +20,10 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let serviceStore = ServiceStore()
   private lazy var serviceRefresher = ServiceRefresher(
     store: serviceStore, sampler: serviceSampler)
+  private let networkSampler = NetworkSampler()
+  private let networkStore = NetworkStore()
+  private lazy var networkRefresher = NetworkRefresher(
+    store: networkStore, sampler: networkSampler)
   private var sampleTimer: Timer?
   private let sampleQueue = DispatchQueue(label: "mwmbar.cpu.sampler", qos: .userInitiated)
   private var caffeineObserver: AnyCancellable?
@@ -65,15 +69,25 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
       rootView: Dashboard(
         model: model, caffeine: caffeine, peekPref: peekPref, store: store,
         serviceStore: serviceStore,
+        networkStore: networkStore,
         onKill: { [weak self] pid, force in
           self?.sampler.kill(pid: pid, force: force)
         },
         onServiceAction: { [weak self] action in
           self?.handleServiceAction(action)
+        },
+        onNetworkScan: { [weak self] in
+          guard let self else { return }
+          if self.networkStore.snapshot().scanning {
+            self.networkRefresher.stopScan()
+          } else {
+            self.networkRefresher.startScan()
+          }
         }
       )
       .environment(store.generation)
-      .environment(serviceStore.generation))
+      .environment(serviceStore.generation)
+      .environment(networkStore.generation))
     popover.contentViewController = host
     // repaint the menubar label whenever caffeine toggles so the tint can
     // reflect it live without waiting for the next 2s cpu tick.
@@ -87,7 +101,6 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     titleTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.tickTitle() }
     }
-    serviceRefresher.start()
   }
 
   private func handleServiceAction(_ action: ServiceAction) {
@@ -119,16 +132,51 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     // get the same popup as a 32 inch external. clamp bounds live in
     // sizePopoverForScreen so the dashboard never fills a huge display.
     sizePopoverForScreen()
-    // seed one sample before showing so the list is populated on first
-    // paint. without this the popover appears with an empty table for
-    // ~2 s until the first timer fires.
-    sampleOnce()
-    startSampling()
+    startTabSampler(for: model.tab)
+    observeTabChanges()
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
   }
 
-  func popoverDidClose(_ notification: Notification) {
+  private func startTabSampler(for tab: DashboardTab) {
+    Log.bar.info("tab start \(tab.rawValue)")
+    switch tab {
+    case .system:
+      sampleOnce()
+      startSampling()
+    case .services:
+      serviceRefresher.start()
+    case .network:
+      networkRefresher.start()
+    }
+  }
+
+  private func stopAllTabSamplers() {
+    Log.bar.info("tab stop all")
     stopSampling()
+    serviceRefresher.stop()
+    networkRefresher.stop()
+  }
+
+  // re-arm the observation after each fire; withObservationTracking is
+  // one-shot and we need to react to every tab change while the popover
+  // stays open.
+  private func observeTabChanges() {
+    withObservationTracking { [model] in
+      _ = model.tab
+    } onChange: { [weak self] in
+      Task { @MainActor in
+        guard let self, self.popover.isShown else { return }
+        self.stopAllTabSamplers()
+        self.startTabSampler(for: self.model.tab)
+        self.observeTabChanges()
+      }
+    }
+  }
+
+  func popoverDidClose(_ notification: Notification) {
+    Log.bar.info("popover close")
+    stopAllTabSamplers()
+    networkRefresher.stopScan()
   }
 
   private func sizePopoverForScreen() {
