@@ -62,8 +62,7 @@ final class ServiceStore: @unchecked Sendable {
   }
 }
 
-/// drives ServiceStore from a background timer. start / stop controlled by
-/// the owner so the loop only runs while the services tab is visible.
+/// background timer; owner controls start / stop.
 final class ServiceRefresher: @unchecked Sendable {
   private let store: ServiceStore
   private let sampler: ServiceSampler
@@ -91,8 +90,7 @@ final class ServiceRefresher: @unchecked Sendable {
     timer = nil
   }
 
-  /// request an immediate refresh outside the periodic cadence. use after a
-  /// start / stop / restart so the UI reflects new state quickly.
+  /// forces an immediate refresh outside the periodic cadence.
   func kick() {
     queue.async { [weak self] in self?.refreshOnce() }
   }

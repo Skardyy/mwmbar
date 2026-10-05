@@ -20,6 +20,19 @@ final class DashboardModel {
   var search = ""
   // services tab
   var serviceSearch = ""
+  // network tab
+  var networkSearch = ""
+  var networkSortColumn: NetworkSortColumn = .ip
+  var networkSortAsc = true
+
+  func toggleNetworkSort(_ col: NetworkSortColumn) {
+    if networkSortColumn == col {
+      networkSortAsc.toggle()
+    } else {
+      networkSortColumn = col
+      networkSortAsc = col == .ip
+    }
+  }
 
   func filtered(_ procs: [ProcInfo]) -> [ProcInfo] {
     let base: [ProcInfo]
@@ -66,7 +79,6 @@ struct Dashboard: View {
   let networkStore: NetworkStore
   let onKill: (pid_t, Bool) -> Void
   let onServiceAction: (ServiceAction) -> Void
-  let onNetworkScan: () -> Void
 
   var body: some View {
     VStack(spacing: 10) {
@@ -80,7 +92,7 @@ struct Dashboard: View {
         case .services:
           ServicesTab(model: model, store: serviceStore, onAction: onServiceAction)
         case .network:
-          NetworkTab(store: networkStore, onScan: onNetworkScan)
+          NetworkTab(model: model, store: networkStore)
         }
       }
     }

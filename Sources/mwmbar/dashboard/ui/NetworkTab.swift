@@ -1,9 +1,14 @@
 import AppKit
 import SwiftUI
 
+enum NetworkSortColumn: Sendable {
+  case ip
+  case name
+}
+
 struct NetworkTab: View {
+  @Bindable var model: DashboardModel
   let store: NetworkStore
-  let onScan: () -> Void
   @Environment(NetworkGeneration.self) private var generation
 
   var body: some View {
@@ -12,8 +17,9 @@ struct NetworkTab: View {
     VStack(spacing: 10) {
       summary(snap: snap)
       Divider()
-      scanControls(snap: snap)
-      lanList(devices: snap.lan)
+      search
+      columnHeader
+      lanList(devices: filtered(snap.lan))
     }
   }
 
@@ -55,54 +61,111 @@ struct NetworkTab: View {
     }
   }
 
-  private func scanControls(snap: NetworkSnapshot) -> some View {
-    HStack(spacing: 8) {
-      if snap.scanning {
-        Button("Stop", systemImage: "stop.fill") { onScan() }
-          .tint(.red)
-        ProgressView()
-          .controlSize(.small)
-        Text("Listening for ARP...")
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-      } else {
-        Button("Start Scan", systemImage: "dot.radiowaves.left.and.right") { onScan() }
-      }
-      Spacer()
-      if let date = snap.lastScanned, !snap.scanning {
-        Text("Last scan \(timeAgo(date))")
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-      }
+  private var search: some View {
+    TextField("Filter by ip / name / service", text: $model.networkSearch)
+      .textFieldStyle(.roundedBorder)
+  }
+
+  private var columnHeader: some View {
+    HStack(spacing: 4) {
+      NetworkSortHeader(
+        label: "IP", column: .ip, model: model, width: 120, alignment: .leading)
+      NetworkSortHeader(
+        label: "Name / services", column: .name, model: model, alignment: .leading
+      )
+      .frame(maxWidth: .infinity)
     }
+    .padding(.horizontal, 4)
   }
 
   private func lanList(devices: [LanDevice]) -> some View {
-    Group {
-      if devices.isEmpty {
-        Text("No devices to show")
-          .font(.system(size: 11))
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else {
-        ScrollView {
-          LazyVStack(spacing: 0) {
-            ForEach(devices) { d in
-              LanRow(device: d)
-            }
-          }
+    ScrollView {
+      LazyVStack(spacing: 0) {
+        ForEach(devices) { d in
+          LanRow(device: d)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       }
     }
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
   }
 
-  private func timeAgo(_ date: Date) -> String {
-    let s = Int(Date().timeIntervalSince(date))
-    if s < 60 { return "\(s)s ago" }
-    if s < 3600 { return "\(s / 60)m ago" }
-    return "\(s / 3600)h ago"
+  private func filtered(_ devices: [LanDevice]) -> [LanDevice] {
+    let needle = model.networkSearch.lowercased()
+    let base =
+      needle.isEmpty
+      ? devices
+      : devices.filter { d in
+        if d.ip.lowercased().contains(needle) { return true }
+        if let host = d.hostname, host.lowercased().contains(needle) { return true }
+        return d.services.contains { $0.lowercased().contains(needle) }
+      }
+    let sorted: [LanDevice]
+    switch model.networkSortColumn {
+    case .ip:
+      sorted = base.sorted { ipOrder($0.ip) < ipOrder($1.ip) }
+    case .name:
+      sorted = base.sorted {
+        ($0.hostname ?? "").localizedCompare($1.hostname ?? "") == .orderedAscending
+      }
+    }
+    return model.networkSortAsc ? sorted : sorted.reversed()
+  }
+
+  private func ipOrder(_ ip: String) -> UInt32 {
+    let parts = ip.split(separator: ".").compactMap { UInt32($0) }
+    guard parts.count == 4 else { return 0 }
+    return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+  }
+}
+
+@MainActor
+private final class SortHoverState: ObservableObject {
+  @Published var value = false
+}
+
+private struct NetworkSortHeader: View {
+  let label: String
+  let column: NetworkSortColumn
+  @Bindable var model: DashboardModel
+  var width: CGFloat? = nil
+  var alignment: HorizontalAlignment = .leading
+  @StateObject private var hover = SortHoverState()
+
+  var body: some View {
+    Button {
+      model.toggleNetworkSort(column)
+    } label: {
+      HStack(spacing: 3) {
+        if alignment == .trailing { Spacer(minLength: 0) }
+        Text(label)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(active ? Color.primary : .secondary)
+        Image(systemName: model.networkSortAsc ? "chevron.up" : "chevron.down")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(.secondary)
+          .opacity(active ? 1 : 0)
+        if alignment == .leading { Spacer(minLength: 0) }
+      }
+      .padding(.vertical, 4)
+      .padding(.horizontal, 6)
+      .contentShape(Rectangle())
+      .background(
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.08) : .clear))
+    }
+    .buttonStyle(.plain)
+    .onHover { hover.value = $0 }
+    .modifier(OptionalWidth(width: width))
+  }
+
+  private var active: Bool { model.networkSortColumn == column }
+}
+
+private struct OptionalWidth: ViewModifier {
+  let width: CGFloat?
+  func body(content: Content) -> some View {
+    if let width { content.frame(width: width) } else { content }
   }
 }
 
@@ -197,7 +260,7 @@ private final class InfoHover: ObservableObject {
 }
 
 private struct SignalBars: View {
-  let level: Int  // 0..4
+  let level: Int
 
   var body: some View {
     HStack(spacing: 1.5) {
@@ -220,14 +283,19 @@ private struct LanRow: View {
       Text(device.ip)
         .font(.system(size: 12, design: .monospaced))
         .frame(width: 120, alignment: .leading)
-      Text(device.hostname ?? "-")
-        .font(.system(size: 12))
-        .lineLimit(1).truncationMode(.middle)
-        .foregroundStyle(device.hostname == nil ? .secondary : .primary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      Text(device.mac)
-        .font(.system(size: 10, design: .monospaced))
-        .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(device.hostname ?? "-")
+          .font(.system(size: 12))
+          .lineLimit(1).truncationMode(.middle)
+          .foregroundStyle(device.hostname != nil ? .primary : .secondary)
+        if !device.services.isEmpty {
+          Text(device.services.joined(separator: ", "))
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.tail)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .padding(.vertical, 5)
     .padding(.horizontal, 8)

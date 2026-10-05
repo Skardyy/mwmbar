@@ -75,14 +75,6 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
         },
         onServiceAction: { [weak self] action in
           self?.handleServiceAction(action)
-        },
-        onNetworkScan: { [weak self] in
-          guard let self else { return }
-          if self.networkStore.snapshot().scanning {
-            self.networkRefresher.stopScan()
-          } else {
-            self.networkRefresher.startScan()
-          }
         }
       )
       .environment(store.generation)
@@ -147,6 +139,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
       serviceRefresher.start()
     case .network:
       networkRefresher.start()
+      networkRefresher.startScan()
     }
   }
 
@@ -155,6 +148,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     stopSampling()
     serviceRefresher.stop()
     networkRefresher.stop()
+    networkRefresher.stopScan()
   }
 
   // re-arm the observation after each fire; withObservationTracking is

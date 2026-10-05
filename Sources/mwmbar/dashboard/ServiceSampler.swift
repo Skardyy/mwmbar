@@ -18,7 +18,7 @@ struct ServiceInfo: Identifiable, Hashable, Sendable {
 
 final class ServiceSampler: @unchecked Sendable {
   func list() -> [ServiceInfo] {
-    guard let out = Self.run(["list"]) else { return [] }
+    guard let out = Self.run(["list"]).stdout else { return [] }
     var result: [ServiceInfo] = []
     for line in out.split(separator: "\n").dropFirst() {
       let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -39,30 +39,52 @@ final class ServiceSampler: @unchecked Sendable {
     return result
   }
 
-  func start(label: String) { _ = Self.run(["start", label]) }
-  func stop(label: String) { _ = Self.run(["stop", label]) }
+  func start(label: String) { logResult("start", label, Self.run(["kickstart", target(label)])) }
+  func stop(label: String) { logResult("stop", label, Self.run(["bootout", target(label)])) }
   func restart(label: String) {
-    let uid = getuid()
-    _ = Self.run(["kickstart", "-k", "gui/\(uid)/\(label)"])
+    logResult("restart", label, Self.run(["kickstart", "-k", target(label)]))
+  }
+
+  private func target(_ label: String) -> String { "gui/\(getuid())/\(label)" }
+
+  private func logResult(_ op: String, _ label: String, _ r: RunResult) {
+    guard r.exit != 0 else { return }
+    Log.bar.warning(
+      "launchctl \(op) \(label) exit=\(r.exit) stderr=\(r.stderr.prefix(200))")
   }
 
   private static func classify(_ label: String) -> ServiceInfo.Kind {
     label.hasPrefix("com.apple.") ? .apple : .user
   }
 
-  @discardableResult
-  private static func run(_ args: [String]) -> String? {
+  private struct RunResult {
+    let exit: Int32
+    let stdout: String?
+    let stderr: String
+  }
+
+  private static func run(_ args: [String]) -> RunResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
     proc.arguments = args
-    let pipe = Pipe()
-    proc.standardOutput = pipe
-    proc.standardError = Pipe()
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
     do {
       try proc.run()
-      proc.waitUntilExit()
-    } catch { return nil }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    return String(data: data, encoding: .utf8)
+    } catch {
+      return RunResult(exit: -1, stdout: nil, stderr: "\(error)")
+    }
+    // read both pipes to end before waitUntilExit; otherwise a child that
+    // writes more than the pipe buffer (~64KB) can block waiting for a
+    // reader while the parent blocks waiting for exit.
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    return RunResult(
+      exit: proc.terminationStatus,
+      stdout: String(data: outData, encoding: .utf8),
+      stderr: String(data: errData, encoding: .utf8) ?? "")
   }
 }

@@ -4,8 +4,8 @@ import Observation
 
 struct LanDevice: Identifiable, Hashable, Sendable {
   let ip: String
-  let mac: String
   let hostname: String?
+  let services: [String]
   var id: String { ip }
 }
 
@@ -86,8 +86,7 @@ final class NetworkStore: @unchecked Sendable {
     }
   }
 
-  /// mutate the snapshot without re-sampling the whole thing. caller does a
-  /// read / modify / commit under a serial queue so no two writers race.
+  /// read, apply, commit. callers must serialize to avoid lost writes.
   func patch(_ apply: (inout NetworkSnapshot) -> Void) {
     var snap = currentForWriter()
     apply(&snap)
@@ -101,8 +100,6 @@ final class NetworkStore: @unchecked Sendable {
   }
 }
 
-/// drives NetworkStore from a background queue. summary (local/public/vpn/ssid)
-/// refreshes periodically; LAN scan is kick-only to avoid constant arp traffic.
 final class NetworkRefresher: @unchecked Sendable {
   private let store: NetworkStore
   private let sampler: NetworkSampler
@@ -131,7 +128,7 @@ final class NetworkRefresher: @unchecked Sendable {
     summaryTimer = nil
   }
 
-  private var listener: ArpListener?
+  private var mdnsListener: MdnsListener?
   private var coordinator: ScanCoordinator?
 
   func startScan() {
@@ -141,18 +138,15 @@ final class NetworkRefresher: @unchecked Sendable {
       snap.lan = []
     }
     let coord = ScanCoordinator(store: store)
-    let arp = ArpListener()
-    arp.start(
-      interface: "en0",
-      onDevice: { ip, mac in coord.onArp(ip: ip, mac: mac) },
-      onError: { _ in })
-    listener = arp
+    let mdns = MdnsListener()
+    mdns.start(onRecord: { rec in coord.onMdns(rec) })
+    mdnsListener = mdns
     coordinator = coord
   }
 
   func stopScan() {
-    listener?.stop()
-    listener = nil
+    mdnsListener?.stop()
+    mdnsListener = nil
     coordinator = nil
     store.patch { snap in
       snap.scanning = false
@@ -167,14 +161,21 @@ final class NetworkRefresher: @unchecked Sendable {
       snap.linkName = s.linkName
       snap.signalBars = s.signalBars
       snap.localIP = s.localIP
-      snap.publicIP = s.publicIP
       snap.vpnActive = s.vpnActive
+    }
+    // public ip is a network round trip; launch it async so the timer
+    // tick returns immediately and the summary commit above is not
+    // blocked on a remote http call.
+    let sampler = self.sampler
+    let store = self.store
+    Task.detached {
+      let ip = await sampler.publicIP()
+      store.patch { snap in snap.publicIP = ip }
     }
   }
 }
 
-/// merges live scan results into the store. serial queue so mdns +
-/// ping-sweep callbacks never race on the same lan dictionary.
+/// serial queue so concurrent mdns callbacks never race on byIp.
 private final class ScanCoordinator: @unchecked Sendable {
   private let store: NetworkStore
   private let serial = DispatchQueue(label: "mwmbar.network.coord")
@@ -184,11 +185,16 @@ private final class ScanCoordinator: @unchecked Sendable {
     self.store = store
   }
 
-  func onArp(ip: String, mac: String) {
+  func onMdns(_ rec: MdnsRecord) {
     serial.async { [self] in
-      if let existing = byIp[ip], existing.mac == mac { return }
-      let host = byIp[ip]?.hostname ?? NetworkSampler.reverseDns(ip)
-      byIp[ip] = LanDevice(ip: ip, mac: mac, hostname: host)
+      let existing = byIp[rec.ip]
+      let host = existing?.hostname ?? rec.hostname
+      var services = Set(existing?.services ?? [])
+      services.insert(rec.serviceType)
+      byIp[rec.ip] = LanDevice(
+        ip: rec.ip,
+        hostname: host,
+        services: services.sorted())
       publish()
     }
   }
