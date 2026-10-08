@@ -154,7 +154,9 @@ extension CompositorTracker {
   }
 
   /// refresh live entries for a single pid by filtering CGWindowListCopyWindowInfo
-  /// to that owner; prunes ids no longer present.
+  /// to that owner. ax trust guard: if the pid still has layer-0 cg windows
+  /// but AX returns empty, treat the AX query as transient failure and keep
+  /// prior live entries for this pid untouched.
   private func rescanPid(_ pid: pid_t) {
     guard
       let app = NSRunningApplication(processIdentifier: pid),
@@ -167,8 +169,16 @@ extension CompositorTracker {
     let opts: CGWindowListOption = [.optionAll, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]
     else { return }
-    var seen: Set<String> = []
     let axWindows = axWindowIds(for: pid)
+    let cgPresent = list.contains { dict in
+      (dict[kCGWindowOwnerPID as String] as? pid_t) == pid
+        && (dict[kCGWindowLayer as String] as? Int) == 0
+    }
+    if axWindows.isEmpty && cgPresent {
+      // transient AX blindness; prior entries stay in live.
+      return
+    }
+    var seen: Set<String> = []
     for dict in list {
       guard
         let number = dict[kCGWindowNumber as String] as? CGWindowID,
@@ -188,13 +198,17 @@ extension CompositorTracker {
   }
 
   /// rebuild `live` from a single CGWindowListCopyWindowInfo pass over every
-  /// normal layer window system wide, and prune `hidden` to the surviving ids.
+  /// normal layer window system wide. ax trust guard: a pid whose cg entry
+  /// exists but ax returns empty keeps its prior live entries - the ax
+  /// subsystem has transient blindness per pid (common post-wake) and
+  /// should not be interpreted as "all windows died".
   private func rescan() {
     var nextLive: [String: WindowInfo] = [:]
     let opts: CGWindowListOption = [.optionAll, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]
     else { return }
     var axCache: [pid_t: Set<CGWindowID>] = [:]
+    var pidsFromCG: Set<pid_t> = []
     for dict in list {
       guard
         let number = dict[kCGWindowNumber as String] as? CGWindowID,
@@ -204,6 +218,7 @@ extension CompositorTracker {
         let app = NSRunningApplication(processIdentifier: pid),
         app.activationPolicy == .regular
       else { continue }
+      pidsFromCG.insert(pid)
       let axWindows = axCache[pid] ?? axWindowIds(for: pid)
       axCache[pid] = axWindows
       guard axWindows.contains(number) else { continue }
@@ -211,6 +226,13 @@ extension CompositorTracker {
       let sid = String(number)
       let name = dict[kCGWindowName as String] as? String ?? app.localizedName
       nextLive[sid] = WindowInfo(pid: pid, bundleId: app.bundleIdentifier, name: name)
+    }
+    for (sid, info) in live where nextLive[sid] == nil {
+      guard pidsFromCG.contains(info.pid) else { continue }
+      let axWindows = axCache[info.pid] ?? Set<CGWindowID>()
+      if axWindows.isEmpty {
+        nextLive[sid] = info
+      }
     }
     live = nextLive
     hidden = hidden.filter { live[$0] != nil }
