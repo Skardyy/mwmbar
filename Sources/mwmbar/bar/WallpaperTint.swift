@@ -28,6 +28,10 @@ final class WallpaperTint {
     sample()
   }
 
+  func resample() {
+    sample()
+  }
+
   func stop() {}
 
   private func sample() {

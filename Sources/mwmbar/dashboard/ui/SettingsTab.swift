@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsTab: View {
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
+  let onResampleWallpaper: () -> Void
 
   private let columns = [
     GridItem(.flexible(), spacing: 10),
@@ -27,6 +28,13 @@ struct SettingsTab: View {
           isActive: caffeine.active,
           activeFill: Color(red: 0.98, green: 0.74, blue: 0.28),
           onToggle: { caffeine.toggle() })
+        ActionCard(
+          icon: "paintpalette.fill",
+          title: "Resample\nwallpaper",
+          description: "re-pick the pill accent from the current desktop background",
+          actionLabel: "Run",
+          activeFill: Color(red: 0.72, green: 0.44, blue: 0.98),
+          onRun: onResampleWallpaper)
       }
       .padding(.horizontal, 4)
     }
@@ -36,6 +44,77 @@ struct SettingsTab: View {
 @MainActor
 private final class CardHover: ObservableObject {
   @Published var value = false
+}
+
+private struct ActionCard: View {
+  let icon: String
+  let title: String
+  let description: String
+  let actionLabel: String
+  let activeFill: Color
+  let onRun: () -> Void
+  @StateObject private var hover = CardHover()
+  @StateObject private var flashed = CardHover()
+
+  var body: some View {
+    Button {
+      onRun()
+      flashed.value = true
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(800))
+        flashed.value = false
+      }
+    } label: {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 8) {
+          Image(systemName: icon)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(activeFill)
+            .frame(width: 28, height: 28)
+            .background(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(activeFill.opacity(0.18))
+            )
+          Text(title)
+            .font(.system(size: 13, weight: .semibold))
+          Spacer(minLength: 0)
+          Text(flashed.value ? "Done" : actionLabel)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(flashed.value ? .green : activeFill)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(
+              Capsule().fill(
+                (flashed.value ? Color.green : activeFill).opacity(0.18))
+            )
+        }
+        Text(description)
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .multilineTextAlignment(.leading)
+        Spacer(minLength: 0)
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(.ultraThinMaterial)
+      )
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.06) : .clear)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+      )
+      .animation(.easeOut(duration: 0.12), value: hover.value)
+      .animation(.easeOut(duration: 0.18), value: flashed.value)
+    }
+    .buttonStyle(.plain)
+    .onHover { hover.value = $0 }
+  }
 }
 
 private struct SettingCard: View {

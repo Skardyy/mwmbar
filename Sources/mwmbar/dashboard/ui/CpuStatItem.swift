@@ -49,8 +49,11 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   }()
   private var lastRendered: (percent: String, caffeine: Bool)?
 
-  init(peekPref: PeekPreference) {
+  private let onResampleWallpaper: () -> Void
+
+  init(peekPref: PeekPreference, onResampleWallpaper: @escaping () -> Void) {
     self.peekPref = peekPref
+    self.onResampleWallpaper = onResampleWallpaper
     // fixed length so title changes do not trigger a menubar wide
     // relayout. 42pt fits "100%" plus the leading zz glyph under a
     // 12pt monospace font without visible trailing padding.
@@ -75,7 +78,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
         },
         onServiceAction: { [weak self] action in
           self?.handleServiceAction(action)
-        }
+        },
+        onResampleWallpaper: onResampleWallpaper
       )
       .environment(store.generation)
       .environment(serviceStore.generation)

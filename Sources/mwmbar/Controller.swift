@@ -9,7 +9,9 @@ final class BarController {
   private var peekByMonitor: [String: PeekController] = [:]
   private let peekService = PeekService()
   private let peekPref = PeekPreference()
-  private lazy var cpu = CpuStatItem(peekPref: peekPref)
+  private lazy var cpu = CpuStatItem(
+    peekPref: peekPref,
+    onResampleWallpaper: { [weak self] in self?.resampleAllWallpapers() })
   nonisolated(unsafe) private var middleClickMonitor: Any?
   nonisolated(unsafe) private var screenParamsObserver: NSObjectProtocol?
 
@@ -34,6 +36,10 @@ final class BarController {
     installScreenParamsObserver()
     syncWindows()
     installPerfCounterDump()
+  }
+
+  private func resampleAllWallpapers() {
+    for bar in windowsByMonitor.values { bar.tint.resample() }
   }
 
   private func installScreenParamsObserver() {

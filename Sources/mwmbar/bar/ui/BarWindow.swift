@@ -30,7 +30,7 @@ final class BarWindow {
   private let window: NSPanel
   private let hosting: BarHostingView<BarWindowRoot>
   private var screen: NSScreen
-  private let tint: WallpaperTint
+  let tint: WallpaperTint
   nonisolated(unsafe) private var frameObserver: NSObjectProtocol?
 
   init(

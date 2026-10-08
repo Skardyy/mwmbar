@@ -80,6 +80,7 @@ struct Dashboard: View {
   let networkStore: NetworkStore
   let onKill: (pid_t, Bool) -> Void
   let onServiceAction: (ServiceAction) -> Void
+  let onResampleWallpaper: () -> Void
 
   var body: some View {
     VStack(spacing: 10) {
@@ -94,7 +95,9 @@ struct Dashboard: View {
         case .network:
           NetworkTab(model: model, store: networkStore)
         case .settings:
-          SettingsTab(caffeine: caffeine, peekPref: peekPref)
+          SettingsTab(
+            caffeine: caffeine, peekPref: peekPref,
+            onResampleWallpaper: onResampleWallpaper)
         }
       }
     }
