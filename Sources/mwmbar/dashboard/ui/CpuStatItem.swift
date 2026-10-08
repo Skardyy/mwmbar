@@ -142,6 +142,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     case .network:
       networkRefresher.start()
       networkRefresher.startScan()
+    case .settings:
+      break
     }
   }
 
@@ -204,10 +206,13 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     let store = self.store
     sampleQueue.async {
       let procs = sampler.sample()
+      let disk = DiskInfo.rootUsage()
       let load = SystemLoad(
         cpuBusy: busy,
         memUsedBytes: HostMemoryInfo.usedBytes(),
         memTotalBytes: HostMemoryInfo.totalBytes(),
+        diskUsedBytes: disk.used,
+        diskTotalBytes: disk.total,
         coreCount: cores)
       store.commit(SystemSnapshot(load: load, procs: procs))
     }
@@ -325,5 +330,19 @@ enum HostMemoryInfo {
     let wired = UInt64(stats.wire_count) * pageSize
     let compressed = UInt64(stats.compressor_page_count) * pageSize
     return active + wired + compressed
+  }
+}
+
+enum DiskInfo {
+  // statfs(2) returns block counts for the root volume. f_bavail is what
+  // Finder treats as "available" (excludes reserved + apfs purgeable).
+  static func rootUsage() -> (used: UInt64, total: UInt64) {
+    var buf = statfs()
+    guard statfs("/", &buf) == 0 else { return (0, 1) }
+    let blockSize = UInt64(buf.f_bsize)
+    let total = UInt64(buf.f_blocks) * blockSize
+    let free = UInt64(buf.f_bavail) * blockSize
+    let used = total > free ? total - free : 0
+    return (used, total)
   }
 }

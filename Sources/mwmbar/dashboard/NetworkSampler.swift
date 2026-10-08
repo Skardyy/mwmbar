@@ -1,6 +1,7 @@
 import CoreWLAN
 import Darwin
 import Foundation
+import Network
 
 struct NetworkSummary: Sendable {
   var linkKind: LinkKind
@@ -12,10 +13,27 @@ struct NetworkSummary: Sendable {
 
 final class NetworkSampler: @unchecked Sendable {
   private let publicUrl = URL(string: "https://api.ipify.org")!
+  private let pathMonitor = NWPathMonitor()
+  private let pathQueue = DispatchQueue(label: "mwmbar.network.path")
+  private let pathLock = NSLock()
+  private var cachedPath: NWPath?
+
+  init() {
+    pathMonitor.pathUpdateHandler = { [weak self] path in
+      guard let self else { return }
+      self.pathLock.withLock { self.cachedPath = path }
+    }
+    pathMonitor.start(queue: pathQueue)
+  }
+
+  deinit {
+    pathMonitor.cancel()
+  }
 
   func summary() -> NetworkSummary {
     let interfaces = Self.ipv4Interfaces()
-    let link = Self.detectLink(interfaces: interfaces)
+    let path = pathLock.withLock { cachedPath }
+    let link = Self.detectLink(interfaces: interfaces, path: path)
     return NetworkSummary(
       linkKind: link.kind,
       linkName: link.name,
@@ -69,21 +87,34 @@ final class NetworkSampler: @unchecked Sendable {
     return out
   }
 
-  private static func detectLink(interfaces: [Iface]) -> (kind: LinkKind, name: String?, bars: Int?)
+  // the OS's own picked primary interface via NWPathMonitor. order of
+  // availableInterfaces matches what macOS uses to route new outbound
+  // connections, so this mirrors the status-bar connectivity icon.
+  private static func detectLink(
+    interfaces: [Iface], path: NWPath?
+  )
+    -> (kind: LinkKind, name: String?, bars: Int?)
   {
-    let wifi = Self.wifi()
-    if wifi.ssid != nil {
-      return (.wifi, wifi.ssid, wifi.bars)
+    guard let primary = path?.availableInterfaces.first else {
+      return (.unknown, nil, nil)
     }
-    if let wired = interfaces.first(where: { $0.name.hasPrefix("en") }) {
-      return (.wired, wired.name, nil)
+    switch primary.type {
+    case .wifi:
+      return (.wifi, primary.name, Self.wifi().bars)
+    case .wiredEthernet:
+      return (.wired, primary.name, nil)
+    case .cellular:
+      return (.vpn, primary.name, nil)
+    case .loopback, .other:
+      if primary.name.hasPrefix("utun") || primary.name.hasPrefix("ipsec")
+        || primary.name.hasPrefix("ppp")
+      {
+        return (.vpn, primary.name, nil)
+      }
+      return (.unknown, primary.name, nil)
+    @unknown default:
+      return (.unknown, primary.name, nil)
     }
-    if let vpn = interfaces.first(where: {
-      $0.name.hasPrefix("utun") || $0.name.hasPrefix("ipsec") || $0.name.hasPrefix("ppp")
-    }) {
-      return (.vpn, vpn.name, nil)
-    }
-    return (.unknown, nil, nil)
   }
 
   private static func wifi() -> (ssid: String?, bars: Int?) {

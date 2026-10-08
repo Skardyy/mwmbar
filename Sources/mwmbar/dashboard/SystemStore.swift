@@ -6,8 +6,11 @@ struct SystemLoad: Equatable, Sendable {
   var cpuBusy: Double = 0
   var memUsedBytes: UInt64 = 0
   var memTotalBytes: UInt64 = 1
+  var diskUsedBytes: UInt64 = 0
+  var diskTotalBytes: UInt64 = 1
   var coreCount: Int = 1
   var memUsedFraction: Double { Double(memUsedBytes) / Double(memTotalBytes) }
+  var diskUsedFraction: Double { Double(diskUsedBytes) / Double(diskTotalBytes) }
 }
 
 /// immutable sample snapshot; written off main, read on main.

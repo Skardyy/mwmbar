@@ -6,6 +6,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
   case system = "System"
   case services = "Services"
   case network = "Network"
+  case settings = "Settings"
   var id: String { rawValue }
 }
 
@@ -87,12 +88,13 @@ struct Dashboard: View {
       Group {
         switch model.tab {
         case .system:
-          SystemTab(
-            model: model, caffeine: caffeine, peekPref: peekPref, store: store, onKill: onKill)
+          SystemTab(model: model, store: store, onKill: onKill)
         case .services:
           ServicesTab(model: model, store: serviceStore, onAction: onServiceAction)
         case .network:
           NetworkTab(model: model, store: networkStore)
+        case .settings:
+          SettingsTab(caffeine: caffeine, peekPref: peekPref)
         }
       }
     }
