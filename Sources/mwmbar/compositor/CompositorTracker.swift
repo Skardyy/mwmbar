@@ -31,9 +31,6 @@ final class CompositorTracker {
   func start() {
     if running { return }
     running = true
-    // use the prompting variant so the binary gets registered in the
-    // Accessibility list; the plain AXIsProcessTrusted only reads state
-    // and never surfaces the binary to the user as a toggle.
     let opts: NSDictionary = ["AXTrustedCheckOptionPrompt": true]
     let trusted = AXIsProcessTrustedWithOptions(opts)
     Log.bar.info("CompositorTracker start trusted=\(trusted)")
@@ -41,7 +38,63 @@ final class CompositorTracker {
     rescan()
     seedHidden()
     installWorkspaceObservers()
+    installRunningAppsKvo()
     refreshFocus(pid: nil)
+  }
+
+  // KVO on the runningApplications array is more reliable than the
+  // didLaunch/didTerminate notifications: some apps (Catalyst Clock.app for one)
+  // update the backing array but skip the notification post, so a notification
+  // based terminate handler never fires for them.
+  private var runningAppsKvo: NSKeyValueObservation?
+  private var knownApps: [pid_t: NSRunningApplication] = [:]
+  private var launchKvos: [pid_t: NSKeyValueObservation] = [:]
+
+  private func installRunningAppsKvo() {
+    for app in NSWorkspace.shared.runningApplications
+    where app.activationPolicy == .regular {
+      knownApps[app.processIdentifier] = app
+    }
+    runningAppsKvo = NSWorkspace.shared.observe(\.runningApplications) { [weak self] _, _ in
+      MainActor.assumeIsolated { self?.reconcileRunningApps() }
+    }
+  }
+
+  private func reconcileRunningApps() {
+    var now: [pid_t: NSRunningApplication] = [:]
+    for app in NSWorkspace.shared.runningApplications
+    where app.activationPolicy == .regular {
+      now[app.processIdentifier] = app
+    }
+    for pid in knownApps.keys where now[pid] == nil {
+      launchKvos.removeValue(forKey: pid)?.invalidate()
+      handleAppTerminated(pid: pid)
+    }
+    for (pid, app) in now where knownApps[pid] == nil {
+      startWatchingLaunch(app)
+    }
+    knownApps = now
+  }
+
+  // observe isFinishedLaunching on the canonical NSRunningApplication from
+  // the array so the system holds the reference. installing an AX observer
+  // before the OS registers the process returns kAXErrorCannotComplete, so
+  // defer until the launch finishes.
+  private func startWatchingLaunch(_ app: NSRunningApplication) {
+    let pid = app.processIdentifier
+    if app.isFinishedLaunching {
+      handleAppLaunched(pid: pid)
+      return
+    }
+    launchKvos[pid] = app.observe(\.isFinishedLaunching, options: [.new]) {
+      [weak self] runningApp, _ in
+      guard runningApp.isFinishedLaunching else { return }
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.launchKvos.removeValue(forKey: pid)?.invalidate()
+        self.handleAppLaunched(pid: pid)
+      }
+    }
   }
 
   /// install an AX observer on every running regular app, including ones with
@@ -58,12 +111,6 @@ final class CompositorTracker {
 extension CompositorTracker {
   fileprivate func installWorkspaceObservers() {
     let nc = NSWorkspace.shared.notificationCenter
-    observeApp(nc, NSWorkspace.didLaunchApplicationNotification) { [weak self] pid in
-      self?.handleAppLaunched(pid: pid)
-    }
-    observeApp(nc, NSWorkspace.didTerminateApplicationNotification) { [weak self] pid in
-      self?.handleAppTerminated(pid: pid)
-    }
     observeApp(nc, NSWorkspace.didHideApplicationNotification) { [weak self] pid in
       self?.setAppHidden(pid: pid, hidden: true)
     }
@@ -100,6 +147,11 @@ extension CompositorTracker {
     let nc = NSWorkspace.shared.notificationCenter
     for token in appWatchers { nc.removeObserver(token) }
     appWatchers.removeAll()
+    runningAppsKvo?.invalidate()
+    runningAppsKvo = nil
+    for (_, kvo) in launchKvos { kvo.invalidate() }
+    launchKvos.removeAll()
+    knownApps.removeAll()
     for (_, obs) in observers {
       CFRunLoopRemoveSource(
         CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
@@ -258,7 +310,7 @@ extension CompositorTracker {
 
   private func handleAppLaunched(pid: pid_t?) {
     guard let pid else {
-      Log.bar.error("didLaunchApplication notification missing pid. skipping rescan.")
+      Log.bar.error("app launch event missing pid. skipping rescan.")
       return
     }
     installObserver(for: pid)
@@ -267,7 +319,7 @@ extension CompositorTracker {
 
   private func handleAppTerminated(pid: pid_t?) {
     guard let pid else {
-      Log.bar.error("didTerminateApplication notification missing pid. skipping rescan.")
+      Log.bar.error("app termination event missing pid. skipping rescan.")
       return
     }
     if let obs = observers.removeValue(forKey: pid) {
