@@ -18,6 +18,7 @@ Homebrew (macOS):
 ```sh
 brew tap skardyy/mwmbar https://github.com/Skardyy/mwmbar.git
 brew install mwmbar
+brew services start mwmbar
 ```
 
 nix-darwin:
