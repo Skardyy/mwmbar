@@ -21,6 +21,12 @@ brew install mwmbar
 brew services start mwmbar
 ```
 
+Updating:
+
+```sh
+cd $(brew --repo skardyy/mwmbar) && git pull && brew upgrade mwmbar
+```
+
 nix-darwin:
 
 ```nix
