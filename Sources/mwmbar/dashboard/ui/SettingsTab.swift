@@ -4,7 +4,9 @@ import SwiftUI
 struct SettingsTab: View {
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
+  @ObservedObject var wmPref: WMPreference
   let onResampleWallpaper: () -> Void
+  let onSwitchWm: (WMKind) -> Void
 
   private let columns = [
     GridItem(.flexible(), spacing: 10),
@@ -13,31 +15,88 @@ struct SettingsTab: View {
 
   var body: some View {
     ScrollView {
-      LazyVGrid(columns: columns, spacing: 10) {
-        SettingCard(
-          icon: "eye.fill",
-          title: "Peek",
-          description: "hover a workspace pill to see live window thumbnails",
-          isActive: peekPref.enabled,
-          activeFill: Color(red: 0.28, green: 0.72, blue: 0.80),
-          onToggle: { peekPref.toggle() })
-        SettingCard(
-          icon: "cup.and.saucer.fill",
-          title: "Caffeine",
-          description: "prevent system sleep (lid closed still forces clamshell)",
-          isActive: caffeine.active,
-          activeFill: Color(red: 0.98, green: 0.74, blue: 0.28),
-          onToggle: { caffeine.toggle() })
-        ActionCard(
-          icon: "paintpalette.fill",
-          title: "Resample\nwallpaper",
-          description: "re-pick the pill accent from the current desktop background",
-          actionLabel: "Run",
-          activeFill: Color(red: 0.72, green: 0.44, blue: 0.98),
-          onRun: onResampleWallpaper)
+      VStack(spacing: 10) {
+        WMPickerCard(kind: wmPref.kind, onSelect: onSwitchWm)
+        LazyVGrid(columns: columns, spacing: 10) {
+          SettingCard(
+            icon: "eye.fill",
+            title: "Peek",
+            description: "hover a workspace pill to see live window thumbnails",
+            isActive: peekPref.enabled,
+            activeFill: Color(red: 0.28, green: 0.72, blue: 0.80),
+            onToggle: { peekPref.toggle() })
+          SettingCard(
+            icon: "cup.and.saucer.fill",
+            title: "Caffeine",
+            description: "prevent system sleep (lid closed still forces clamshell)",
+            isActive: caffeine.active,
+            activeFill: Color(red: 0.98, green: 0.74, blue: 0.28),
+            onToggle: { caffeine.toggle() })
+          ActionCard(
+            icon: "paintpalette.fill",
+            title: "Resample\nwallpaper",
+            description: "re-pick the pill accent from the current desktop background",
+            actionLabel: "Run",
+            activeFill: Color(red: 0.72, green: 0.44, blue: 0.98),
+            onRun: onResampleWallpaper)
+        }
       }
       .padding(.horizontal, 4)
     }
+  }
+}
+
+private struct WMPickerCard: View {
+  let kind: WMKind
+  let onSelect: (WMKind) -> Void
+  private let activeFill = Color(red: 0.45, green: 0.65, blue: 0.98)
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        Image(systemName: "square.grid.3x3.fill")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(activeFill)
+          .frame(width: 28, height: 28)
+          .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(activeFill.opacity(0.18)))
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Window manager")
+            .font(.system(size: 13, weight: .semibold))
+          Text("none hides the bar; dashboard stays")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      HStack(spacing: 6) {
+        ForEach(WMKind.allCases) { k in
+          Button(action: { onSelect(k) }) {
+            Text(k.label)
+              .font(.system(size: 11, weight: .semibold))
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 6)
+              .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                  .fill(k == kind ? activeFill.opacity(0.22) : Color.primary.opacity(0.06))
+              )
+              .foregroundStyle(k == kind ? activeFill : .secondary)
+          }
+          .buttonStyle(.plain)
+          .animation(.easeOut(duration: 0.12), value: kind)
+        }
+      }
+    }
+    .padding(12)
+    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(.ultraThinMaterial)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
   }
 }
 

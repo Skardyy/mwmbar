@@ -60,6 +60,14 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
     scheduleRefresh()
   }
 
+  func stop() {
+    Log.source.info("aerospace source stop")
+    invalidatorLock.withLock { $0 = nil }
+    events.onFrame = nil
+    cmd.close()
+    events.close()
+  }
+
   func switchWorkspace(id: String) {
     cmd.send(args: ["workspace", id]) { r in
       if case .failure(let e) = r {

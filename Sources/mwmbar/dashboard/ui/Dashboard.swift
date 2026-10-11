@@ -75,12 +75,14 @@ struct Dashboard: View {
   @Bindable var model: DashboardModel
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
+  @ObservedObject var wmPref: WMPreference
   let store: SystemStore
   let serviceStore: ServiceStore
   let networkStore: NetworkStore
   let onKill: (pid_t, Bool) -> Void
   let onServiceAction: (ServiceAction) -> Void
   let onResampleWallpaper: () -> Void
+  let onSwitchWm: (WMKind) -> Void
 
   var body: some View {
     VStack(spacing: 10) {
@@ -96,8 +98,9 @@ struct Dashboard: View {
           NetworkTab(model: model, store: networkStore)
         case .settings:
           SettingsTab(
-            caffeine: caffeine, peekPref: peekPref,
-            onResampleWallpaper: onResampleWallpaper)
+            caffeine: caffeine, peekPref: peekPref, wmPref: wmPref,
+            onResampleWallpaper: onResampleWallpaper,
+            onSwitchWm: onSwitchWm)
         }
       }
     }

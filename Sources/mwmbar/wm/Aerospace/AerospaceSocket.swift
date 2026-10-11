@@ -49,6 +49,19 @@ final class AerospaceSocket: @unchecked Sendable {
     self.path = "/tmp/bobko.aerospace-\(user).sock"
   }
 
+  func close() {
+    queue.async {
+      self._onFrame = nil
+      self._onError = nil
+      self.pendingConnect = nil
+      self.pendingResponses.removeAll()
+      self.buffer.removeAll()
+      self.handshakeDone = false
+    }
+    connection?.cancel()
+    connection = nil
+  }
+
   func connect(then: @escaping @Sendable (Error?) -> Void) {
     let endpoint = NWEndpoint.unix(path: path)
     let params = NWParameters.tcp

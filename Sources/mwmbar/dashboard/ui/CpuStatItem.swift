@@ -50,10 +50,19 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private var lastRendered: (percent: String, caffeine: Bool)?
 
   private let onResampleWallpaper: () -> Void
+  private let onSwitchWm: (WMKind) -> Void
+  private let wmPref: WMPreference
 
-  init(peekPref: PeekPreference, onResampleWallpaper: @escaping () -> Void) {
+  init(
+    peekPref: PeekPreference,
+    wmPref: WMPreference,
+    onResampleWallpaper: @escaping () -> Void,
+    onSwitchWm: @escaping (WMKind) -> Void
+  ) {
     self.peekPref = peekPref
+    self.wmPref = wmPref
     self.onResampleWallpaper = onResampleWallpaper
+    self.onSwitchWm = onSwitchWm
     // fixed length so title changes do not trigger a menubar wide
     // relayout. 42pt fits "100%" plus the leading zz glyph under a
     // 12pt monospace font without visible trailing padding.
@@ -70,7 +79,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     popover.delegate = self
     let host = NSHostingController(
       rootView: Dashboard(
-        model: model, caffeine: caffeine, peekPref: peekPref, store: store,
+        model: model, caffeine: caffeine, peekPref: peekPref, wmPref: wmPref,
+        store: store,
         serviceStore: serviceStore,
         networkStore: networkStore,
         onKill: { [weak self] pid, force in
@@ -79,7 +89,8 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
         onServiceAction: { [weak self] action in
           self?.handleServiceAction(action)
         },
-        onResampleWallpaper: onResampleWallpaper
+        onResampleWallpaper: onResampleWallpaper,
+        onSwitchWm: onSwitchWm
       )
       .environment(store.generation)
       .environment(serviceStore.generation)

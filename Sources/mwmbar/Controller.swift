@@ -9,33 +9,75 @@ final class BarController {
   private var peekByMonitor: [String: PeekController] = [:]
   private let peekService = PeekService()
   private let peekPref = PeekPreference()
+  private let wmPref = WMPreference()
   private lazy var cpu = CpuStatItem(
     peekPref: peekPref,
-    onResampleWallpaper: { [weak self] in self?.resampleAllWallpapers() })
+    wmPref: wmPref,
+    onResampleWallpaper: { [weak self] in self?.resampleAllWallpapers() },
+    onSwitchWm: { [weak self] kind in self?.switchKind(kind) })
   nonisolated(unsafe) private var middleClickMonitor: Any?
   nonisolated(unsafe) private var screenParamsObserver: NSObjectProtocol?
-
-  private static func makeSource() -> any WMSource {
-    AerospaceSource()
-  }
+  private var wmActive = false
 
   func start() {
-    invalidator.start()
-    let src: any WMSource = Self.makeSource()
-    source = src
-    src.start(invalidator: invalidator)
     cpu.start()
-    invalidator.onLifecycleChange = { [weak self] in
-      Task { @MainActor in
-        guard let self else { return }
-        self.peekService.invalidateAll()
-        for peek in self.peekByMonitor.values { peek.refreshIfShown() }
-      }
-    }
-    installMiddleClickMonitor()
-    installScreenParamsObserver()
-    syncWindows()
     installPerfCounterDump()
+    bringUpWM(kind: wmPref.kind)
+  }
+
+  func switchKind(_ kind: WMKind) {
+    if kind == wmPref.kind && wmActive { return }
+    Log.bar.info("switchKind \(kind.rawValue)")
+    tearDownWM()
+    wmPref.kind = kind
+    bringUpWM(kind: kind)
+  }
+
+  private func bringUpWM(kind: WMKind) {
+    if wmActive { return }
+    Log.bar.info("bringUpWM \(kind.rawValue)")
+    switch kind {
+    case .none:
+      wmActive = true
+      return
+    case .aerospace:
+      invalidator.start()
+      let src: any WMSource = AerospaceSource()
+      source = src
+      src.start(invalidator: invalidator)
+      invalidator.onLifecycleChange = { [weak self] in
+        Task { @MainActor in
+          guard let self else { return }
+          self.peekService.invalidateAll()
+          for peek in self.peekByMonitor.values { peek.refreshIfShown() }
+        }
+      }
+      installMiddleClickMonitor()
+      installScreenParamsObserver()
+      syncWindows()
+      wmActive = true
+    }
+  }
+
+  private func tearDownWM() {
+    if !wmActive { return }
+    Log.bar.info("tearDownWM")
+    for (name, win) in windowsByMonitor {
+      win.close()
+      windowsByMonitor.removeValue(forKey: name)
+    }
+    peekByMonitor.removeAll()
+    peekService.invalidateAll()
+    if let mon = middleClickMonitor { NSEvent.removeMonitor(mon) }
+    middleClickMonitor = nil
+    if let obs = screenParamsObserver {
+      NotificationCenter.default.removeObserver(obs)
+    }
+    screenParamsObserver = nil
+    source?.stop()
+    source = nil
+    invalidator.stop()
+    wmActive = false
   }
 
   private func resampleAllWallpapers() {
@@ -131,11 +173,15 @@ final class BarController {
       peekByMonitor.removeValue(forKey: name)
     }
     // observe generation tick to re run after each commit; withObservation
-    // Tracking fires once so resubscribe each call.
+    // Tracking fires once so resubscribe each call. the wmActive guard stops
+    // the chain when the wm is torn down so no stale sync fires.
     withObservationTracking { [invalidator] in
       _ = invalidator.generation.tick
     } onChange: { [weak self] in
-      Task { @MainActor in self?.syncWindows() }
+      Task { @MainActor in
+        guard let self, self.wmActive else { return }
+        self.syncWindows()
+      }
     }
   }
 }

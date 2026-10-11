@@ -62,6 +62,22 @@ final class Invalidator: @unchecked Sendable {
 
   @MainActor func start() {
     tracker.start()
+    // tracker.start()'s initial rescan populates tracker.live without firing
+    // onChange, so seed the invalidator state directly. without this the
+    // first source submit sees an empty trackerLive and drops every window
+    // as "unknown to compositor" until the next real wm event.
+    ingestTrackerOnMain()
+  }
+
+  @MainActor func stop() {
+    Log.bar.info("invalidator stop")
+    tracker.stop()
+    onLifecycleChange = nil
+    state.withLock { s in
+      s = State()
+    }
+    snapshotRef.store(SnapshotBox(.empty), ordering: .releasing)
+    Task { @MainActor in self.generation.tick &+= 1 }
   }
 
   @MainActor func snapshot() -> BarSnapshot {
