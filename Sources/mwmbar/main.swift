@@ -10,17 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 }
 
-// bootstrap NSApplication, set accessory policy, and finishLaunching
-// before triggering the Accessibility prompt. tccd attributes the
-// request to this process's current state; without an activation policy
-// and a finished launch the request is silently discarded for launchd
-// spawned agents. Screen Recording is prompted lazily on first capture.
+// accessory policy is set before run() so the status item is reachable
+// before any wm backend starts. the Accessibility prompt is deferred to
+// the window tracking backend, so a user running without a wm backend is
+// never prompted.
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.finishLaunching()
-
-let axOpts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-_ = AXIsProcessTrustedWithOptions(axOpts)
 
 let delegate = AppDelegate()
 app.delegate = delegate

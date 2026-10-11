@@ -95,14 +95,9 @@ final class ProcessSampler: @unchecked Sendable {
   }
 
   private static func read(pid: pid_t) -> Raw? {
-    var task = proc_taskinfo()
-    // stride (not size) + >= compare so the call survives Apple adding
-    // trailing fields to proc_taskinfo in a future SDK bump. same for the
-    // bsd info call below. per pid failure is a trace and continue since
-    // short lived pids disappear between proc_listpids and proc_pidinfo.
-    let taskSize = Int32(MemoryLayout<proc_taskinfo>.stride)
-    let r = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, taskSize)
-    guard r >= taskSize else { return nil }
+    // bsd shortinfo is the most permissive libproc call; works for root
+    // owned and SIP protected processes (WindowServer, kernel_task
+    // helpers). if even this fails the pid is already gone.
     var bsd = proc_bsdshortinfo()
     let bsdSize = Int32(MemoryLayout<proc_bsdshortinfo>.stride)
     let br = proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &bsd, bsdSize)
@@ -118,13 +113,44 @@ final class ProcessSampler: @unchecked Sendable {
     // Center, WindowManager, loginwindow, ...) run as the logged in user so
     // uid alone misses them; the executable path classifier covers the rest.
     let isSystem = uid < 500 || Self.isSystemPath(pid: pid)
+    // proc_pid_rusage reports phys_footprint (matches Activity Monitor's
+    // "Memory" column) plus user/system cpu time. the kernel refuses it
+    // for a handful of locked down pids (WindowServer, launchd, loginwindow)
+    // and only Apple signed binaries carrying com.apple.system-task-ports.read
+    // can read those; the fallback below keeps those rows alive with RSS.
+    var ru = rusage_info_v4()
+    let rc: Int32 = withUnsafeMutablePointer(to: &ru) { ptr in
+      ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reb in
+        proc_pid_rusage(pid, RUSAGE_INFO_V4, reb)
+      }
+    }
+    var userNs: UInt64 = 0
+    var systemNs: UInt64 = 0
+    var footprint: UInt64 = 0
+    if rc == 0 {
+      userNs = ru.ri_user_time
+      systemNs = ru.ri_system_time
+      footprint = ru.ri_phys_footprint
+    } else {
+      // fallback for pids that reject rusage: use PROC_PIDTASKINFO; some
+      // pids reject that too, in which case we still return a row with
+      // zeros so the user at least sees the process name.
+      var task = proc_taskinfo()
+      let taskSize = Int32(MemoryLayout<proc_taskinfo>.stride)
+      let r = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &task, taskSize)
+      if r >= taskSize {
+        userNs = task.pti_total_user
+        systemNs = task.pti_total_system
+        footprint = task.pti_resident_size
+      }
+    }
     return Raw(
       name: name,
       user: user,
       userUid: uid,
-      userNs: task.pti_total_user,
-      system: task.pti_total_system,
-      rss: task.pti_resident_size,
+      userNs: userNs,
+      system: systemNs,
+      rss: footprint,
       isSystem: isSystem)
   }
 

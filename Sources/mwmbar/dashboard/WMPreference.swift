@@ -22,8 +22,8 @@ final class WMPreference: ObservableObject {
   }
 
   init() {
-    UserDefaults.standard.register(defaults: [Self.key: WMKind.aerospace.rawValue])
-    let raw = UserDefaults.standard.string(forKey: Self.key) ?? WMKind.aerospace.rawValue
-    self.kind = WMKind(rawValue: raw) ?? .aerospace
+    UserDefaults.standard.register(defaults: [Self.key: WMKind.none.rawValue])
+    let raw = UserDefaults.standard.string(forKey: Self.key) ?? WMKind.none.rawValue
+    self.kind = WMKind(rawValue: raw) ?? .none
   }
 }
