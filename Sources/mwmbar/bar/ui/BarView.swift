@@ -14,7 +14,6 @@ struct BarView: View {
     // reading tick subscribes the view to snapshot commits; the let keeps
     // viewbuilder from discarding it.
     let _ = generation.tick
-    let _ = PerfTrace.tick("barview.body")
     let snapshot = invalidator.snapshot()
     let monitor = snapshot.monitors.first { $0.nsScreenName == screenName }
     let visible = Self.visibleWorkspaces(monitor: monitor)

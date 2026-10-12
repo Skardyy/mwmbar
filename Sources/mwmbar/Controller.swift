@@ -21,7 +21,6 @@ final class BarController {
 
   func start() {
     cpu.start()
-    installPerfCounterDump()
     bringUpWM(kind: wmPref.kind)
   }
 
@@ -93,15 +92,6 @@ final class BarController {
     }
   }
 
-  // periodic counter flush so a reader can see throughput buckets without
-  // scrolling through every per event span log. only runs when MWMBAR_PERF
-  // is set (PerfTrace guards internally).
-  private func installPerfCounterDump() {
-    Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-      MainActor.assumeIsolated { PerfTrace.dumpCounters() }
-    }
-  }
-
   /// middle click on a hovered icon closes its window via the compositor.
   private func installMiddleClickMonitor() {
     middleClickMonitor = NSEvent.addLocalMonitorForEvents(
@@ -153,7 +143,7 @@ final class BarController {
           self?.source?.switchWorkspace(id: wsId)
         },
         onRestoreWindow: { [weak self] id in
-          self?.invalidator.restoreWindow(id: id)
+          self?.invalidator.unhideWindow(id: id)
         },
         onPeekEnter: { [weak self] ws, pillLocalX in
           guard let self else { return }

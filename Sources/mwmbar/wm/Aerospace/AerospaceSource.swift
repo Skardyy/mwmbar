@@ -34,18 +34,14 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
       }
       guard let self else { return }
       self.events.onFrame = { [weak self] payload in
-        var kindName = "aero.unknown"
         do {
           let event = try JSONDecoder().decode(AerospaceServerEvent.self, from: payload)
-          kindName = "aero.\(event.event)"
           Log.source.debug("event \(event.event)")
         } catch {
           let prefix = String(data: payload.prefix(120), encoding: .utf8) ?? "<bin>"
           Log.source.error(
             "aerospace event decode failed: \(error). prefix=\(prefix)")
         }
-        PerfTrace.incr(kindName)
-        PerfTrace.incr("aero.event")
         self?.scheduleRefresh()
       }
       self.events.send(args: ["subscribe", "--all"]) { r in
@@ -83,7 +79,6 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
     let shouldRun = coalesce.withLock { c -> Bool in
       if c.inFlight {
         c.pending = true
-        PerfTrace.incr("aero.refresh.coalesced")
         return false
       }
       c.inFlight = true
@@ -109,8 +104,6 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
   }
 
   private func refresh() async {
-    let span = PerfTrace.begin("aero.refresh")
-    defer { PerfTrace.end(span) }
     async let monitorsF = fetch(
       [AerospaceMonitorRow].self,
       args: [
@@ -201,6 +194,6 @@ nonisolated final class AerospaceSource: WMSource, @unchecked Sendable {
       Log.source.debug(
         "monitor \(m.id) focused=\(m.focusedWorkspaceId ?? "nil") ws=[\(ids)]")
     }
-    invalidator?.submit(monitors: finalMonitors)
+    invalidator?.wmSubmit(monitors: finalMonitors)
   }
 }
