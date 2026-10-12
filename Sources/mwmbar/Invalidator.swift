@@ -46,6 +46,7 @@ final class Invalidator: @unchecked Sendable {
   private struct State {
     var lastMonitors: [Monitor] = []
     var haveWmSubmission = false
+    var workspacePlacement: [String: (monitorId: String, workspaceId: String)] = [:]
     var compositorWindows: [CGWindowID: CompositorWindow] = [:]
     var compositorFocused: CGWindowID? = nil
   }
@@ -89,6 +90,13 @@ final class Invalidator: @unchecked Sendable {
       self.state.withLock { s in
         s.lastMonitors = monitors
         s.haveWmSubmission = true
+        for m in monitors {
+          for ws in m.workspaces {
+            for w in ws.windows {
+              s.workspacePlacement[w.id] = (m.id, ws.id)
+            }
+          }
+        }
       }
       self.rebuildSnapshot()
     }
@@ -121,6 +129,21 @@ final class Invalidator: @unchecked Sendable {
     let s = state.withLock { $0 }
     guard s.haveWmSubmission else { return }
 
+    // distrust the wm, compositor didn't saw the window die, yet wm dropped it
+    // simply collect the "orphans" so they later be added back regardless of what the wm said
+    let wmReportedWids = Set(
+      s.lastMonitors.flatMap {
+        $0.workspaces.flatMap { $0.windows.compactMap { CGWindowID($0.id) } }
+      })
+    var orphansByWs: [String: [Window]] = [:]
+    for (wid, info) in s.compositorWindows where !wmReportedWids.contains(wid) {
+      let sid = String(wid)
+      guard let place = s.workspacePlacement[sid] else { continue }
+      let bid = info.bundleId ?? ""
+      let win = Window(id: sid, bundleId: bid, name: "", isHidden: info.hidden)
+      orphansByWs["\(place.monitorId)/\(place.workspaceId)", default: []].append(win)
+    }
+
     // walk the wm tree; drop windows the compositor says do not exist;
     // enrich bundle id and hidden flag from compositor truth.
     let filtered = s.lastMonitors.map { monitor in
@@ -138,6 +161,9 @@ final class Invalidator: @unchecked Sendable {
           if let bid = info.bundleId { out.bundleId = bid }
           out.isHidden = info.hidden
           return out
+        }
+        if let extras = orphansByWs["\(monitor.id)/\(ws.id)"] {
+          w.windows.append(contentsOf: extras)
         }
         return w
       }
