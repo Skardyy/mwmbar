@@ -10,10 +10,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 }
 
-// accessory policy is set before run() so the status item is reachable
-// before any wm backend starts. the Accessibility prompt is deferred to
-// the window tracking backend, so a user running without a wm backend is
-// never prompted.
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.finishLaunching()

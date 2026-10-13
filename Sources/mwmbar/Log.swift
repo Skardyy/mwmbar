@@ -1,11 +1,7 @@
 import Foundation
 import os
 
-/// wrapper around os.Logger. all output is gated by LogConfig.level; default
-/// is .off so no stderr writes, no string interpolation cost, and no unified
-/// logging daemon hop. enable per run via MWMBAR_LOG=debug | info | warn |
-/// error. the unified log can also be tailed live when enabled via:
-/// `log stream --predicate 'subsystem == "wmwidget"'`.
+/// wrapper around os.Logger. all output is gated by LogConfig.level
 struct MwmLogger: Sendable {
   let category: String
   private let inner: Logger

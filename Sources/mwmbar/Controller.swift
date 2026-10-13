@@ -111,6 +111,8 @@ final class BarController {
 
   private func syncWindows() {
     let snapshot = invalidator.snapshot()
+
+    // remove any bars on monitors that no longer exists
     let liveByName: [String: Monitor] = Dictionary(
       snapshot.monitors.map { ($0.nsScreenName, $0) }, uniquingKeysWith: { a, _ in a })
     for (name, win) in windowsByMonitor where liveByName[name] == nil {
@@ -118,24 +120,34 @@ final class BarController {
       windowsByMonitor.removeValue(forKey: name)
       peekByMonitor.removeValue(forKey: name)
     }
+
+    // re point the live bars into their screens
     for (name, win) in windowsByMonitor {
       if let screen = NSScreen.screens.first(where: { $0.localizedName == name }) {
         win.setScreen(screen)
       }
     }
+
     for monitor in snapshot.monitors where windowsByMonitor[monitor.nsScreenName] == nil {
+      // match monitor name to NSScreen
       let name = monitor.nsScreenName
       let matched = NSScreen.screens.first(where: { $0.localizedName == name })
       guard let screen = matched ?? NSScreen.main else {
         Log.bar.warning("monitor \(name) has no matching NSScreen")
         continue
       }
-      let allNames = NSScreen.screens.map { $0.localizedName }.joined(separator: ",")
       Log.bar.debug(
-        "bar create name=\(name) matched=\(matched?.localizedName ?? "<fallback main>") fallback=\(matched == nil) nsScreens=[\(allNames)] frame=\(NSStringFromRect(screen.frame))"
+        "bar create name=\(name) matched=\(matched?.localizedName ?? "<fallback main>") "
+          + "fallback=\(matched == nil) "
+          + "nsScreens=[\(NSScreen.screens.map { $0.localizedName }.joined(separator: ","))] "
+          + "frame=\(NSStringFromRect(screen.frame))"
       )
+
+      // peek
       let peek = PeekController(screen: screen, service: peekService, pref: peekPref)
       peekByMonitor[name] = peek
+
+      // create bars
       windowsByMonitor[name] = BarWindow(
         screen: screen, screenName: name,
         invalidator: invalidator,
@@ -159,12 +171,8 @@ final class BarController {
           self?.peekByMonitor[name]?.exit()
         })
     }
-    for (name, _) in peekByMonitor where liveByName[name] == nil {
-      peekByMonitor.removeValue(forKey: name)
-    }
-    // observe generation tick to re run after each commit; withObservation
-    // Tracking fires once so resubscribe each call. the wmActive guard stops
-    // the chain when the wm is torn down so no stale sync fires.
+
+    // rerender on invalidator tick
     withObservationTracking { [invalidator] in
       _ = invalidator.generation.tick
     } onChange: { [weak self] in
