@@ -11,6 +11,46 @@ struct NetworkSummary: Sendable {
   var vpnActive: Bool
 }
 
+enum InterfaceKind: Sendable, Equatable {
+  case ethernet
+  case wifi
+  case bridge
+  case vpn
+  case loopback
+  case other
+
+  var label: String {
+    switch self {
+    case .ethernet: return "Ethernet"
+    case .wifi: return "Wi-Fi"
+    case .bridge: return "Bridge"
+    case .vpn: return "VPN"
+    case .loopback: return "Loopback"
+    case .other: return "Other"
+    }
+  }
+
+  var icon: String {
+    switch self {
+    case .ethernet: return "cable.connector"
+    case .wifi: return "wifi"
+    case .bridge: return "point.3.filled.connected.trianglepath.dotted"
+    case .vpn: return "lock.shield.fill"
+    case .loopback: return "arrow.triangle.2.circlepath"
+    case .other: return "questionmark.circle"
+    }
+  }
+}
+
+// raw BSD interface type codes from <net/if_types.h>, read off the same
+// sockaddr_dl record getifaddrs already returns for the mac.
+private enum IFT {
+  static let ether: UInt8 = 0x06
+  static let loop: UInt8 = 0x18
+  static let ppp: UInt8 = 0x17
+  static let bridge: UInt8 = 0xd1
+}
+
 struct InterfaceInfo: Identifiable, Sendable, Equatable {
   let name: String
   let isUp: Bool
@@ -18,6 +58,7 @@ struct InterfaceInfo: Identifiable, Sendable, Equatable {
   let isLoopback: Bool
   let ipv4: String?
   let mac: String?
+  let kind: InterfaceKind
   var id: String { name }
 }
 
@@ -54,6 +95,7 @@ final class NetworkSampler: @unchecked Sendable {
       var isLoopback = false
       var ipv4: String?
       var mac: String?
+      var iftType: UInt8?
     }
     var order: [String] = []
     var byName: [String: Builder] = [:]
@@ -85,15 +127,16 @@ final class NetworkSampler: @unchecked Sendable {
         // alen, slen) before the variable length name + address data; read
         // raw bytes off the original buffer rather than the Swift bridged
         // struct, whose sdl_data tuple is fixed at 12 bytes and can truncate
-        // a long interface name before the mac bytes it precedes.
+        // a long interface name before the mac bytes it precedes. sdl_type
+        // (byte 4) is the raw BSD IFT_* code for this interface.
         let raw = UnsafeRawPointer(addr)
+        byName[name]!.iftType = raw.load(fromByteOffset: 4, as: UInt8.self)
         let nlen = Int(raw.load(fromByteOffset: 5, as: UInt8.self))
         let alen = Int(raw.load(fromByteOffset: 6, as: UInt8.self))
         if alen == 6 {
           let macBytes = raw.advanced(by: 8 + nlen).assumingMemoryBound(to: UInt8.self)
-          byName[name]!.mac = (0..<6)
-            .map { String(format: "%02x", macBytes[$0]) }
-            .joined(separator: ":")
+          let bytes = (0..<6).map { macBytes[$0] }
+          byName[name]!.mac = bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
         }
       }
     }
@@ -102,8 +145,28 @@ final class NetworkSampler: @unchecked Sendable {
       guard let b = byName[name] else { return nil }
       return InterfaceInfo(
         name: name, isUp: b.isUp, isRunning: b.isRunning, isLoopback: b.isLoopback,
-        ipv4: b.ipv4, mac: b.mac)
+        ipv4: b.ipv4, mac: b.mac,
+        kind: Self.classify(name: name, isLoopback: b.isLoopback, iftType: b.iftType))
     }
+  }
+
+  // wifi is not its own BSD interface type (it reports IFT_ETHER too), so
+  // it is distinguished by membership in CoreWLAN's own interface list, the
+  // same source used elsewhere for ssid/rssi.
+  private static let wifiInterfaceNames: Set<String> = Set(
+    CWWiFiClient.shared().interfaces()?.compactMap(\.interfaceName) ?? [])
+
+  private static func classify(name: String, isLoopback: Bool, iftType: UInt8?) -> InterfaceKind {
+    if isLoopback || iftType == IFT.loop { return .loopback }
+    if name.hasPrefix("utun") || name.hasPrefix("ipsec") || name.hasPrefix("ppp")
+      || iftType == IFT.ppp
+    {
+      return .vpn
+    }
+    if iftType == IFT.bridge { return .bridge }
+    if wifiInterfaceNames.contains(name) { return .wifi }
+    if iftType == IFT.ether { return .ethernet }
+    return .other
   }
 
   func summary() -> NetworkSummary {

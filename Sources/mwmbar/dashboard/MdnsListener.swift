@@ -7,6 +7,16 @@ struct MdnsRecord {
   let ip: String
   let hostname: String?
   let serviceType: String
+  let interfaceName: String?
+}
+
+// if_indextoname wants a buffer of at least IFNAMSIZ bytes; 0 means "any
+// interface" (e.g. a loopback-delivered record) and has no name.
+private func interfaceName(for index: UInt32) -> String? {
+  guard index != 0 else { return nil }
+  var buf = [CChar](repeating: 0, count: Int(IFNAMSIZ))
+  guard if_indextoname(index, &buf) != nil else { return nil }
+  return buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
 }
 
 // name = "_airplay._tcp", regtype = "_tcp.local." -> "_airplay._tcp."
@@ -120,9 +130,12 @@ final class MdnsListener: @unchecked Sendable {
     lock.withLock { if running { refs.append(ref) } else { DNSServiceRefDeallocate(ref) } }
   }
 
-  fileprivate func deliver(ip: String, hostname: String?, type: String) {
+  fileprivate func deliver(ip: String, hostname: String?, type: String, iface: UInt32) {
     let cb = lock.withLock { onRecord }
-    cb?(MdnsRecord(ip: ip, hostname: hostname, serviceType: humanServiceName(type)))
+    cb?(
+      MdnsRecord(
+        ip: ip, hostname: hostname, serviceType: humanServiceName(type),
+        interfaceName: interfaceName(for: iface)))
   }
 
   private func humanServiceName(_ type: String) -> String {
@@ -225,5 +238,5 @@ private func addrCallback(
       nil, 0, NI_NUMERICHOST) == 0
   else { return }
   let ip = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
-  ctx.parent.deliver(ip: ip, hostname: ctx.host, type: ctx.type)
+  ctx.parent.deliver(ip: ip, hostname: ctx.host, type: ctx.type, iface: iface)
 }

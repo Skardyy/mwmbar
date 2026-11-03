@@ -6,6 +6,7 @@ struct LanDevice: Identifiable, Hashable, Sendable {
   let ip: String
   let hostname: String?
   let services: [String]
+  let interfaceName: String?
   var id: String { ip }
 }
 
@@ -172,7 +173,8 @@ private final class ScanCoordinator: @unchecked Sendable {
       byIp[rec.ip] = LanDevice(
         ip: rec.ip,
         hostname: host,
-        services: services.sorted())
+        services: services.sorted(),
+        interfaceName: existing?.interfaceName ?? rec.interfaceName)
       publish()
     }
   }

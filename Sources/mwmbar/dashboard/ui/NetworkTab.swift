@@ -4,11 +4,12 @@ import SwiftUI
 enum NetworkSortColumn: Sendable {
   case ip
   case name
+  case interfaceName
 }
 
 enum NetworkSubTab: String, CaseIterable, Identifiable {
-  case mdns = "mDNS"
   case interfaces = "Interfaces"
+  case mdns = "mDNS"
   var id: String { rawValue }
 }
 
@@ -30,7 +31,7 @@ struct NetworkTab: View {
         columnHeader
         lanList(devices: filtered(snap.lan))
       case .interfaces:
-        interfacesList(sortedInterfaces(snap.interfaces))
+        interfacesList(sortedInterfaces(snap.interfaces), defaultName: snap.linkName)
       }
     }
   }
@@ -71,11 +72,11 @@ struct NetworkTab: View {
     }
   }
 
-  private func interfacesList(_ interfaces: [InterfaceInfo]) -> some View {
+  private func interfacesList(_ interfaces: [InterfaceInfo], defaultName: String?) -> some View {
     ScrollView {
       LazyVStack(spacing: 0) {
         ForEach(interfaces) { iface in
-          InterfaceRow(iface: iface)
+          InterfaceRow(iface: iface, isDefault: defaultName != nil && iface.name == defaultName)
         }
       }
     }
@@ -84,40 +85,17 @@ struct NetworkTab: View {
   }
 
   private func summary(snap: NetworkSnapshot) -> some View {
-    VStack(spacing: 8) {
-      HStack(spacing: 8) {
-        InfoTile(
-          icon: snap.linkKind.icon,
-          label: linkLabel(snap.linkKind),
-          value: snap.linkName ?? "(not connected)",
-          trailing: snap.signalBars.map { AnyView(SignalBars(level: $0)) })
-        InfoTile(
-          icon: "lock.shield.fill",
-          label: "VPN",
-          value: snap.vpnActive ? "Active" : "Off",
-          valueTint: snap.vpnActive ? .green : .secondary)
-      }
-      HStack(spacing: 8) {
-        InfoTile(
-          icon: "network",
-          label: "Local IP",
-          value: snap.localIP ?? "-",
-          copyable: snap.localIP)
-        InfoTile(
-          icon: "globe",
-          label: "Public IP",
-          value: snap.publicIP ?? "-",
-          copyable: snap.publicIP)
-      }
-    }
-  }
-
-  private func linkLabel(_ kind: LinkKind) -> String {
-    switch kind {
-    case .wifi: return "Wi-Fi"
-    case .wired: return "LAN"
-    case .vpn: return "VPN link"
-    case .unknown: return "Link"
+    HStack(spacing: 8) {
+      InfoTile(
+        icon: "globe",
+        label: "Public IP",
+        value: snap.publicIP ?? "-",
+        copyable: snap.publicIP)
+      InfoTile(
+        icon: "lock.shield.fill",
+        label: "VPN",
+        value: snap.vpnActive ? "Active" : "Off",
+        valueTint: snap.vpnActive ? .green : .secondary)
     }
   }
 
@@ -129,6 +107,8 @@ struct NetworkTab: View {
   private var columnHeader: some View {
     HStack(spacing: 4) {
       NetworkSortHeader(
+        label: "NIC", column: .interfaceName, model: model, width: 70, alignment: .leading)
+      NetworkSortHeader(
         label: "IP", column: .ip, model: model, width: 120, alignment: .leading)
       NetworkSortHeader(
         label: "Name / services", column: .name, model: model, alignment: .leading
@@ -139,10 +119,12 @@ struct NetworkTab: View {
   }
 
   private func lanList(devices: [LanDevice]) -> some View {
-    ScrollView {
+    let kindByName = Dictionary(
+      uniqueKeysWithValues: store.snapshot().interfaces.map { ($0.name, $0.kind) })
+    return ScrollView {
       LazyVStack(spacing: 0) {
         ForEach(devices) { d in
-          LanRow(device: d)
+          LanRow(device: d, kind: d.interfaceName.flatMap { kindByName[$0] })
         }
       }
     }
@@ -167,6 +149,11 @@ struct NetworkTab: View {
     case .name:
       sorted = base.sorted {
         ($0.hostname ?? "").localizedCompare($1.hostname ?? "") == .orderedAscending
+      }
+    case .interfaceName:
+      sorted = base.sorted {
+        ($0.interfaceName ?? "").localizedStandardCompare($1.interfaceName ?? "")
+          == .orderedAscending
       }
     }
     return model.networkSortAsc ? sorted : sorted.reversed()
@@ -340,6 +327,7 @@ private let networkRowHeight: CGFloat = 40
 
 private struct LanRow: View {
   let device: LanDevice
+  let kind: InterfaceKind?
   @StateObject private var hover = InfoHover()
   @StateObject private var copied = CopiedFlag()
 
@@ -349,6 +337,16 @@ private struct LanRow: View {
       copied.flash()
     } label: {
       HStack(spacing: 10) {
+        HStack(spacing: 6) {
+          Image(systemName: (kind ?? .other).icon)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .frame(width: 12)
+          Text(device.interfaceName ?? "-")
+            .font(.system(size: 12, design: .monospaced))
+            .lineLimit(1)
+        }
+        .frame(width: 70, alignment: .leading)
         Text(copied.value ? "copied" : device.ip)
           .font(.system(size: 12, design: .monospaced))
           .foregroundStyle(copied.value ? .green : .primary)
@@ -375,7 +373,6 @@ private struct LanRow: View {
       )
     }
     .buttonStyle(.plain)
-    .help("Click to copy")
     .onHover { hover.value = $0 }
   }
 }
@@ -388,6 +385,7 @@ private func copyToClipboard(_ value: String) {
 
 private struct InterfaceRow: View {
   let iface: InterfaceInfo
+  let isDefault: Bool
   @StateObject private var hover = InfoHover()
   @StateObject private var copied = CopiedFlag()
 
@@ -418,9 +416,11 @@ private struct InterfaceRow: View {
       copied.flash()
     } label: {
       HStack(spacing: 10) {
-        Circle()
-          .fill(statusColor)
-          .frame(width: 7, height: 7)
+        Image(systemName: iface.kind.icon)
+          .font(.system(size: 12))
+          .foregroundStyle(statusColor)
+          .frame(width: 16)
+          .help(iface.kind.label)
         Text(iface.name)
           .font(.system(size: 12, weight: .medium, design: .monospaced))
           .frame(width: 80, alignment: .leading)
@@ -435,6 +435,14 @@ private struct InterfaceRow: View {
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        if isDefault {
+          Text("DEFAULT")
+            .font(.system(size: 9, weight: .heavy))
+            .foregroundStyle(.green)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.green.opacity(0.15)))
+        }
         Text(statusLabel)
           .font(.system(size: 10, weight: .semibold))
           .foregroundStyle(statusColor)
@@ -448,7 +456,6 @@ private struct InterfaceRow: View {
     }
     .buttonStyle(.plain)
     .disabled(iface.ipv4 == nil)
-    .help(iface.ipv4 != nil ? "Click to copy" : "")
     .onHover { hover.value = $0 }
   }
 }
