@@ -11,7 +11,7 @@ struct MdnsRecord {
 }
 
 // if_indextoname wants a buffer of at least IFNAMSIZ bytes; 0 means "any
-// interface" (e.g. a loopback-delivered record) and has no name.
+// interface" (e.g. a record delivered via loopback) and has no name.
 private func interfaceName(for index: UInt32) -> String? {
   guard index != 0 else { return nil }
   var buf = [CChar](repeating: 0, count: Int(IFNAMSIZ))
@@ -29,7 +29,7 @@ private func stitchMetaType(name: String, regtype: String) -> String {
 
 /// continuous passive mDNS listener. kicks off a meta browse to learn
 /// what service types are being announced on the link, then opens a
-/// long-lived browse per type and streams every (ip, hostname) pair as
+/// long lived browse per type and streams every (ip, hostname) pair as
 /// devices advertise themselves. uses the dns_sd C API with
 /// DNSServiceSetDispatchQueue since the Foundation NetServiceBrowser
 /// wrapper does not deliver callbacks on background threads.
@@ -63,7 +63,12 @@ final class MdnsListener: @unchecked Sendable {
     var ref: DNSServiceRef?
     let err = DNSServiceBrowse(
       &ref, 0, 0, "_services._dns-sd._udp", "local.", metaCallback, ctxPtr)
-    guard err == kDNSServiceErr_NoError, let ref else { return }
+    guard err == kDNSServiceErr_NoError, let ref else {
+      // best-effort background scan: trace and continue, the lan list
+      // just stays empty until the user retries the scan.
+      Log.network.warning("mdns meta browse failed: \(err)")
+      return
+    }
     DNSServiceSetDispatchQueue(ref, queue)
     lock.withLock { if running { refs.append(ref) } else { DNSServiceRefDeallocate(ref) } }
   }
@@ -85,6 +90,7 @@ final class MdnsListener: @unchecked Sendable {
     var ref: DNSServiceRef?
     let err = DNSServiceBrowse(&ref, 0, 0, type, "local.", typeCallback, ctxPtr)
     guard err == kDNSServiceErr_NoError, let ref else {
+      Log.network.warning("mdns browse of \(type) failed: \(err)")
       _ = Unmanaged<TypeContext>.fromOpaque(ctxPtr).takeRetainedValue()
       return
     }
@@ -104,6 +110,7 @@ final class MdnsListener: @unchecked Sendable {
     let err = DNSServiceResolve(
       &ref, 0, 0, name, regtype, domain, resolveCallback, ctxPtr)
     guard err == kDNSServiceErr_NoError, let ref else {
+      Log.network.warning("mdns resolve of \(name) failed: \(err)")
       _ = Unmanaged<ResolveContext>.fromOpaque(ctxPtr).takeRetainedValue()
       return
     }
@@ -123,6 +130,7 @@ final class MdnsListener: @unchecked Sendable {
       &ref, 0, 0, DNSServiceProtocol(kDNSServiceProtocol_IPv4), host,
       addrCallback, ctxPtr)
     guard err == kDNSServiceErr_NoError, let ref else {
+      Log.network.warning("mdns address lookup of \(host) failed: \(err)")
       _ = Unmanaged<AddrContext>.fromOpaque(ctxPtr).takeRetainedValue()
       return
     }
@@ -188,8 +196,12 @@ private func metaCallback(
   _ regtype: UnsafePointer<CChar>?, _ domain: UnsafePointer<CChar>?,
   _ context: UnsafeMutableRawPointer?
 ) {
-  guard err == kDNSServiceErr_NoError, let name, let regtype, let context else { return }
+  guard let context else { return }
   let listener = Unmanaged<MdnsListener>.fromOpaque(context).takeUnretainedValue()
+  guard err == kDNSServiceErr_NoError, let name, let regtype else {
+    Log.network.warning("mdns meta browse callback error: \(err)")
+    return
+  }
   let full = stitchMetaType(name: String(cString: name), regtype: String(cString: regtype))
   listener.onMetaType(full)
 }
@@ -202,7 +214,10 @@ private func typeCallback(
 ) {
   guard let context else { return }
   let ctx = Unmanaged<TypeContext>.fromOpaque(context).takeUnretainedValue()
-  guard err == kDNSServiceErr_NoError, let name, let regtype, let domain else { return }
+  guard err == kDNSServiceErr_NoError, let name, let regtype, let domain else {
+    Log.network.warning("mdns browse of \(ctx.type) callback error: \(err)")
+    return
+  }
   ctx.parent.onInstance(
     name: String(cString: name), regtype: String(cString: regtype),
     domain: String(cString: domain), type: ctx.type)
@@ -217,7 +232,10 @@ private func resolveCallback(
 ) {
   guard let context else { return }
   let ctx = Unmanaged<ResolveContext>.fromOpaque(context).takeUnretainedValue()
-  guard err == kDNSServiceErr_NoError, let hosttarget else { return }
+  guard err == kDNSServiceErr_NoError, let hosttarget else {
+    Log.network.warning("mdns resolve callback error for \(ctx.type): \(err)")
+    return
+  }
   ctx.parent.onHost(String(cString: hosttarget), type: ctx.type)
 }
 
@@ -229,14 +247,22 @@ private func addrCallback(
 ) {
   guard let context else { return }
   let ctx = Unmanaged<AddrContext>.fromOpaque(context).takeUnretainedValue()
-  guard err == kDNSServiceErr_NoError, let addr else { return }
+  guard err == kDNSServiceErr_NoError, let addr else {
+    Log.network.warning("mdns address callback error for \(ctx.host): \(err)")
+    return
+  }
+  // ipv6-only records are skipped on purpose: the rest of the app only
+  // tracks/displays ipv4 lan addresses, this is not a failure.
   if addr.pointee.sa_family != UInt8(AF_INET) { return }
   var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
   guard
     getnameinfo(
       addr, socklen_t(addr.pointee.sa_len), &buf, socklen_t(buf.count),
       nil, 0, NI_NUMERICHOST) == 0
-  else { return }
+  else {
+    Log.network.warning("mdns getnameinfo failed for \(ctx.host)")
+    return
+  }
   let ip = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
   ctx.parent.deliver(ip: ip, hostname: ctx.host, type: ctx.type, iface: iface)
 }

@@ -86,7 +86,12 @@ final class NetworkSampler: @unchecked Sendable {
   // getifaddrs reports as separate entries per interface name.
   func allInterfaces() -> [InterfaceInfo] {
     var head: UnsafeMutablePointer<ifaddrs>?
-    guard getifaddrs(&head) == 0, let first = head else { return [] }
+    guard getifaddrs(&head) == 0, let first = head else {
+      // periodic sampler on a refresh timer: trace and continue rather
+      // than crash the daemon over a transient getifaddrs failure.
+      Log.network.warning("getifaddrs failed: \(String(cString: strerror(errno)))")
+      return []
+    }
     defer { freeifaddrs(head) }
 
     struct Builder {
@@ -184,7 +189,7 @@ final class NetworkSampler: @unchecked Sendable {
       vpnActive: Self.vpnActive(interfaces: interfaces))
   }
 
-  // async-first; callers await instead of blocking a background queue on a
+  // async first; callers await instead of blocking a background queue on a
   // semaphore. returns nil on timeout / parse failure (silent trace;
   // offline is the common case and does not warrant noise).
   func publicIP() async -> String? {
@@ -208,7 +213,10 @@ final class NetworkSampler: @unchecked Sendable {
 
   private static func ipv4Interfaces() -> [Iface] {
     var head: UnsafeMutablePointer<ifaddrs>?
-    guard getifaddrs(&head) == 0, let first = head else { return [] }
+    guard getifaddrs(&head) == 0, let first = head else {
+      Log.network.warning("getifaddrs failed: \(String(cString: strerror(errno)))")
+      return []
+    }
     defer { freeifaddrs(head) }
     var out: [Iface] = []
     var cur: UnsafeMutablePointer<ifaddrs>? = first
@@ -231,7 +239,7 @@ final class NetworkSampler: @unchecked Sendable {
 
   // the OS's own picked primary interface via NWPathMonitor. order of
   // availableInterfaces matches what macOS uses to route new outbound
-  // connections, so this mirrors the status-bar connectivity icon.
+  // connections, so this mirrors the status bar connectivity icon.
   private static func detectLink(
     interfaces: [Iface], path: NWPath?
   )

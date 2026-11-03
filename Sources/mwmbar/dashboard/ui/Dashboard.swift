@@ -96,7 +96,7 @@ struct Dashboard: View {
         case .services:
           ServicesTab(model: model, store: serviceStore, onAction: onServiceAction)
         case .network:
-          NetworkTab(model: model, store: networkStore)
+          NetworkTab(model: model, store: networkStore, onKill: onKill)
         case .settings:
           SettingsTab(
             caffeine: caffeine, peekPref: peekPref, wmPref: wmPref,
@@ -162,6 +162,9 @@ struct FilterChip: View {
   }
 }
 
+// kept as classic ObservableObject (not @Observable) so @StateObject works
+// under the CommandLineTools SDK, which ships without the SwiftUIMacros
+// plugin that @Observable / @State would need. See WindowIcon.swift.
 @MainActor
 final class ChipHover: ObservableObject {
   @Published var value = false

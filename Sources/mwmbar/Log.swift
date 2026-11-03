@@ -67,4 +67,5 @@ enum Log {
   static let bar = MwmLogger(category: "bar")
   static let source = MwmLogger(category: "source")
   static let socket = MwmLogger(category: "socket")
+  static let network = MwmLogger(category: "network")
 }

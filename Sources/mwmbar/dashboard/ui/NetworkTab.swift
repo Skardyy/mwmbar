@@ -1,5 +1,30 @@
 import AppKit
+import Combine
 import SwiftUI
+
+// kept as classic ObservableObject (not @Observable) so @StateObject works
+// under the CommandLineTools SDK, which ships without the SwiftUIMacros
+// plugin that @Observable / @State would need. See WindowIcon.swift.
+@MainActor
+private final class HoverFlag: ObservableObject {
+  @Published var value = false
+}
+
+@MainActor
+private final class CopiedFlag: ObservableObject {
+  @Published var value = false
+  private var task: Task<Void, Never>?
+
+  func flash() {
+    task?.cancel()
+    value = true
+    task = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(1.5))
+      if Task.isCancelled { return }
+      self?.value = false
+    }
+  }
+}
 
 enum NetworkSortColumn: Sendable {
   case ip
@@ -10,12 +35,14 @@ enum NetworkSortColumn: Sendable {
 enum NetworkSubTab: String, CaseIterable, Identifiable {
   case interfaces = "Interfaces"
   case mdns = "mDNS"
+  case ports = "Ports"
   var id: String { rawValue }
 }
 
 struct NetworkTab: View {
   @Bindable var model: DashboardModel
   let store: NetworkStore
+  let onKill: (pid_t, Bool) -> Void
   @Environment(NetworkGeneration.self) private var generation
 
   var body: some View {
@@ -29,11 +56,34 @@ struct NetworkTab: View {
       case .mdns:
         search
         columnHeader
-        lanList(devices: filtered(snap.lan))
+        lanList(devices: filtered(snap.lan), interfaces: snap.interfaces)
       case .interfaces:
         interfacesList(sortedInterfaces(snap.interfaces), defaultName: snap.linkName)
+      case .ports:
+        portsList(sortedPorts(snap.ports))
       }
     }
+  }
+
+  // tcp before udp, then by port ascending so clustered dev server ranges
+  // (3000, 5173, 8080...) read top to bottom in the order you'd guess them.
+  private func sortedPorts(_ ports: [PortInfo]) -> [PortInfo] {
+    ports.sorted { a, b in
+      if a.proto != b.proto { return a.proto == .tcp }
+      return a.port < b.port
+    }
+  }
+
+  private func portsList(_ ports: [PortInfo]) -> some View {
+    ScrollView {
+      LazyVStack(spacing: 0) {
+        ForEach(ports) { port in
+          PortRow(port: port, onKill: onKill)
+        }
+      }
+    }
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
   }
 
   private var subTabPicker: some View {
@@ -126,9 +176,9 @@ struct NetworkTab: View {
     .padding(.horizontal, 4)
   }
 
-  private func lanList(devices: [LanDevice]) -> some View {
+  private func lanList(devices: [LanDevice], interfaces: [InterfaceInfo]) -> some View {
     let kindByName = Dictionary(
-      uniqueKeysWithValues: store.snapshot().interfaces.map { ($0.name, $0.kind) })
+      uniqueKeysWithValues: interfaces.map { ($0.name, $0.kind) })
     return ScrollView {
       LazyVStack(spacing: 0) {
         ForEach(devices) { d in
@@ -174,18 +224,13 @@ struct NetworkTab: View {
   }
 }
 
-@MainActor
-private final class SortHoverState: ObservableObject {
-  @Published var value = false
-}
-
 private struct NetworkSortHeader: View {
   let label: String
   let column: NetworkSortColumn
   @Bindable var model: DashboardModel
   var width: CGFloat? = nil
   var alignment: HorizontalAlignment = .leading
-  @StateObject private var hover = SortHoverState()
+  @StateObject private var hover = HoverFlag()
 
   var body: some View {
     Button {
@@ -231,7 +276,7 @@ private struct InfoTile: View {
   var valueTint: Color = .primary
   var trailing: AnyView? = nil
   var copyable: String? = nil
-  @StateObject private var hover = InfoHover()
+  @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
 
   var body: some View {
@@ -293,27 +338,6 @@ private struct InfoTile: View {
   }
 }
 
-@MainActor
-private final class CopiedFlag: ObservableObject {
-  @Published var value = false
-  private var task: Task<Void, Never>?
-
-  func flash() {
-    task?.cancel()
-    value = true
-    task = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(1.5))
-      if Task.isCancelled { return }
-      self?.value = false
-    }
-  }
-}
-
-@MainActor
-private final class InfoHover: ObservableObject {
-  @Published var value = false
-}
-
 private struct SignalBars: View {
   let level: Int
 
@@ -336,7 +360,7 @@ private let networkRowHeight: CGFloat = 40
 private struct LanRow: View {
   let device: LanDevice
   let kind: InterfaceKind?
-  @StateObject private var hover = InfoHover()
+  @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
 
   var body: some View {
@@ -394,7 +418,7 @@ private func copyToClipboard(_ value: String) {
 private struct InterfaceRow: View {
   let iface: InterfaceInfo
   let isDefault: Bool
-  @StateObject private var hover = InfoHover()
+  @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
 
   // "active" means carrying a real ip, not merely IFF_UP|IFF_RUNNING: a
@@ -465,5 +489,51 @@ private struct InterfaceRow: View {
     .buttonStyle(.plain)
     .disabled(iface.ipv4 == nil)
     .onHover { hover.value = $0 }
+  }
+}
+
+private struct PortRow: View {
+  let port: PortInfo
+  let onKill: (pid_t, Bool) -> Void
+  @StateObject private var hover = HoverFlag()
+  @StateObject private var copied = CopiedFlag()
+
+  var body: some View {
+    Button {
+      copyToClipboard(String(port.port))
+      copied.flash()
+    } label: {
+      HStack(spacing: 10) {
+        Text(port.proto.rawValue)
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(port.proto == .tcp ? .blue : .purple)
+          .frame(width: 32, alignment: .leading)
+        Text(copied.value ? "copied" : String(port.port))
+          .font(.system(size: 12, weight: .medium, design: .monospaced))
+          .foregroundStyle(copied.value ? .green : .primary)
+          .frame(width: 60, alignment: .leading)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(port.command)
+            .font(.system(size: 12))
+            .lineLimit(1).truncationMode(.tail)
+          Text("pid \(port.pid)")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .frame(height: networkRowHeight)
+      .padding(.horizontal, 8)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
+      )
+    }
+    .buttonStyle(.plain)
+    .onHover { hover.value = $0 }
+    .contextMenu {
+      Button("Terminate (SIGTERM)") { onKill(port.pid, false) }
+      Button("Force Kill (SIGKILL)", role: .destructive) { onKill(port.pid, true) }
+    }
   }
 }

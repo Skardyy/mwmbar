@@ -37,6 +37,7 @@ struct NetworkSnapshot: Sendable {
   var lastScanned: Date?
   var scanning: Bool = false
   var interfaces: [InterfaceInfo] = []
+  var ports: [PortInfo] = []
 }
 
 @MainActor
@@ -134,6 +135,7 @@ final class NetworkRefresher: @unchecked Sendable {
   private func refreshSummary() {
     let s = sampler.summary()
     let ifaces = sampler.allInterfaces()
+    let ports = PortSampler.sample()
     store.patch { snap in
       snap.linkKind = s.linkKind
       snap.linkName = s.linkName
@@ -141,6 +143,7 @@ final class NetworkRefresher: @unchecked Sendable {
       snap.localIP = s.localIP
       snap.vpnActive = s.vpnActive
       snap.interfaces = ifaces
+      snap.ports = ports
     }
     // public ip is a network round trip; launch it async so the timer
     // tick returns immediately and the summary commit above is not
