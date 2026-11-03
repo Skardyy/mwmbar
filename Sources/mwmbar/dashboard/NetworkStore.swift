@@ -83,14 +83,23 @@ final class NetworkRefresher: @unchecked Sendable {
   private let sampler: NetworkSampler
   private let queue = DispatchQueue(label: "mwmbar.network", qos: .utility)
   private let summaryInterval: TimeInterval
+  private let fastInterval: TimeInterval
 
-  init(store: NetworkStore, sampler: NetworkSampler, summaryInterval: TimeInterval = 15.0) {
+  // interfaces/ports are plain local syscalls + one lsof fork, cheap enough
+  // to poll fast while the tab showing them is actually open. the public ip
+  // lookup is a real network round trip, so it stays on the slower timer.
+  init(
+    store: NetworkStore, sampler: NetworkSampler, summaryInterval: TimeInterval = 15.0,
+    fastInterval: TimeInterval = 2.0
+  ) {
     self.store = store
     self.sampler = sampler
     self.summaryInterval = summaryInterval
+    self.fastInterval = fastInterval
   }
 
   private var summaryTimer: DispatchSourceTimer?
+  private var fastTimer: DispatchSourceTimer?
 
   func start() {
     stop()
@@ -99,11 +108,19 @@ final class NetworkRefresher: @unchecked Sendable {
     t.setEventHandler { [weak self] in self?.refreshSummary() }
     t.resume()
     summaryTimer = t
+
+    let f = DispatchSource.makeTimerSource(queue: queue)
+    f.schedule(deadline: .now(), repeating: fastInterval)
+    f.setEventHandler { [weak self] in self?.refreshFast() }
+    f.resume()
+    fastTimer = f
   }
 
   func stop() {
     summaryTimer?.cancel()
     summaryTimer = nil
+    fastTimer?.cancel()
+    fastTimer = nil
   }
 
   private var mdnsListener: MdnsListener?
@@ -134,16 +151,12 @@ final class NetworkRefresher: @unchecked Sendable {
 
   private func refreshSummary() {
     let s = sampler.summary()
-    let ifaces = sampler.allInterfaces()
-    let ports = PortSampler.sample()
     store.patch { snap in
       snap.linkKind = s.linkKind
       snap.linkName = s.linkName
       snap.signalBars = s.signalBars
       snap.localIP = s.localIP
       snap.vpnActive = s.vpnActive
-      snap.interfaces = ifaces
-      snap.ports = ports
     }
     // public ip is a network round trip; launch it async so the timer
     // tick returns immediately and the summary commit above is not
@@ -153,6 +166,15 @@ final class NetworkRefresher: @unchecked Sendable {
     Task.detached {
       let ip = await sampler.publicIP()
       store.patch { snap in snap.publicIP = ip }
+    }
+  }
+
+  private func refreshFast() {
+    let ifaces = sampler.allInterfaces()
+    let ports = PortSampler.sample()
+    store.patch { snap in
+      snap.interfaces = ifaces
+      snap.ports = ports
     }
   }
 }
