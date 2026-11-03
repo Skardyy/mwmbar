@@ -163,7 +163,10 @@ final class NetworkSampler: @unchecked Sendable {
     {
       return .vpn
     }
-    if iftType == IFT.bridge { return .bridge }
+    // macOS reports a bridge's own sockaddr_dl as IFT_ETHER (0x6), not
+    // IFT_BRIDGE, regardless of the real underlying header; the BSD name is
+    // the only reliable signal.
+    if name.hasPrefix("bridge") || iftType == IFT.bridge { return .bridge }
     if wifiInterfaceNames.contains(name) { return .wifi }
     if iftType == IFT.ether { return .ethernet }
     return .other

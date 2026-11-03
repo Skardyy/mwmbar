@@ -56,6 +56,8 @@ struct NetworkTab: View {
   // then active without one (bridge/virtual interfaces up but idle), then
   // up but not running, then down, loopback always last regardless of
   // state since it is never the thing a user is checking for.
+  private static let kindOrder: [InterfaceKind] = [.wifi, .ethernet, .bridge, .vpn, .other]
+
   private func sortedInterfaces(_ interfaces: [InterfaceInfo]) -> [InterfaceInfo] {
     func tier(_ i: InterfaceInfo) -> Int {
       if i.isLoopback { return 4 }
@@ -64,10 +66,16 @@ struct NetworkTab: View {
       if i.isUp { return 2 }
       return 3
     }
+    func kindRank(_ i: InterfaceInfo) -> Int {
+      Self.kindOrder.firstIndex(of: i.kind) ?? Self.kindOrder.count
+    }
     return interfaces.sorted { a, b in
       let ta = tier(a)
       let tb = tier(b)
       if ta != tb { return ta < tb }
+      let ka = kindRank(a)
+      let kb = kindRank(b)
+      if ka != kb { return ka < kb }
       return a.name.localizedStandardCompare(b.name) == .orderedAscending
     }
   }
