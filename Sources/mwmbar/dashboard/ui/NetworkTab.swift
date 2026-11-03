@@ -6,6 +6,12 @@ enum NetworkSortColumn: Sendable {
   case name
 }
 
+enum NetworkSubTab: String, CaseIterable, Identifiable {
+  case mdns = "mDNS"
+  case interfaces = "Interfaces"
+  var id: String { rawValue }
+}
+
 struct NetworkTab: View {
   @Bindable var model: DashboardModel
   let store: NetworkStore
@@ -17,10 +23,64 @@ struct NetworkTab: View {
     VStack(spacing: 10) {
       summary(snap: snap)
       Divider()
-      search
-      columnHeader
-      lanList(devices: filtered(snap.lan))
+      subTabPicker
+      switch model.networkSubTab {
+      case .mdns:
+        search
+        columnHeader
+        lanList(devices: filtered(snap.lan))
+      case .interfaces:
+        interfacesList(sortedInterfaces(snap.interfaces))
+      }
     }
+  }
+
+  private var subTabPicker: some View {
+    HStack(spacing: 2) {
+      ForEach(NetworkSubTab.allCases) { tab in
+        FilterChip(
+          label: tab.rawValue,
+          selected: model.networkSubTab == tab,
+          action: { model.networkSubTab = tab })
+      }
+      Spacer()
+    }
+    .padding(2)
+    .background(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .fill(Color.primary.opacity(0.04)))
+  }
+
+  // active with an ip first (the interfaces actually carrying traffic),
+  // then active without one (bridge/virtual interfaces up but idle), then
+  // up but not running, then down, loopback always last regardless of
+  // state since it is never the thing a user is checking for.
+  private func sortedInterfaces(_ interfaces: [InterfaceInfo]) -> [InterfaceInfo] {
+    func tier(_ i: InterfaceInfo) -> Int {
+      if i.isLoopback { return 4 }
+      if i.isUp && i.isRunning && i.ipv4 != nil { return 0 }
+      if i.isUp && i.isRunning { return 1 }
+      if i.isUp { return 2 }
+      return 3
+    }
+    return interfaces.sorted { a, b in
+      let ta = tier(a)
+      let tb = tier(b)
+      if ta != tb { return ta < tb }
+      return a.name.localizedStandardCompare(b.name) == .orderedAscending
+    }
+  }
+
+  private func interfacesList(_ interfaces: [InterfaceInfo]) -> some View {
+    ScrollView {
+      LazyVStack(spacing: 0) {
+        ForEach(interfaces) { iface in
+          InterfaceRow(iface: iface)
+        }
+      }
+    }
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
   }
 
   private func summary(snap: NetworkSnapshot) -> some View {
@@ -274,35 +334,121 @@ private struct SignalBars: View {
   }
 }
 
+/// both LanRow and InterfaceRow lock to this so the list does not jump
+/// height depending on whether a row's optional second line is present.
+private let networkRowHeight: CGFloat = 40
+
 private struct LanRow: View {
   let device: LanDevice
   @StateObject private var hover = InfoHover()
+  @StateObject private var copied = CopiedFlag()
 
   var body: some View {
-    HStack(spacing: 10) {
-      Text(device.ip)
-        .font(.system(size: 12, design: .monospaced))
-        .frame(width: 120, alignment: .leading)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(device.hostname ?? "-")
-          .font(.system(size: 12))
-          .lineLimit(1).truncationMode(.middle)
-          .foregroundStyle(device.hostname != nil ? .primary : .secondary)
-        if !device.services.isEmpty {
-          Text(device.services.joined(separator: ", "))
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .lineLimit(1).truncationMode(.tail)
+    Button {
+      copyToClipboard(device.ip)
+      copied.flash()
+    } label: {
+      HStack(spacing: 10) {
+        Text(copied.value ? "copied" : device.ip)
+          .font(.system(size: 12, design: .monospaced))
+          .foregroundStyle(copied.value ? .green : .primary)
+          .frame(width: 120, alignment: .leading)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(device.hostname ?? "-")
+            .font(.system(size: 12))
+            .lineLimit(1).truncationMode(.middle)
+            .foregroundStyle(device.hostname != nil ? .primary : .secondary)
+          if !device.services.isEmpty {
+            Text(device.services.joined(separator: ", "))
+              .font(.system(size: 10))
+              .foregroundStyle(.secondary)
+              .lineLimit(1).truncationMode(.tail)
+          }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(height: networkRowHeight)
+      .padding(.horizontal, 8)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
+      )
     }
-    .padding(.vertical, 5)
-    .padding(.horizontal, 8)
-    .background(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
-    )
+    .buttonStyle(.plain)
+    .help("Click to copy")
+    .onHover { hover.value = $0 }
+  }
+}
+
+private func copyToClipboard(_ value: String) {
+  let pb = NSPasteboard.general
+  pb.clearContents()
+  pb.setString(value, forType: .string)
+}
+
+private struct InterfaceRow: View {
+  let iface: InterfaceInfo
+  @StateObject private var hover = InfoHover()
+  @StateObject private var copied = CopiedFlag()
+
+  // "active" means carrying a real ip, not merely IFF_UP|IFF_RUNNING: a
+  // bridge or virtual interface sits up+running at all times whether or
+  // not anything is actually plugged into it.
+  private var statusColor: Color {
+    switch statusLabel {
+    case "active": return .green
+    case "no ip": return .orange
+    case "up": return .orange
+    default: return .secondary
+    }
+  }
+
+  private var statusLabel: String {
+    if iface.isLoopback { return "loopback" }
+    if iface.isUp && iface.isRunning && iface.ipv4 != nil { return "active" }
+    if iface.isUp && iface.isRunning { return "no ip" }
+    if iface.isUp { return "up" }
+    return "down"
+  }
+
+  var body: some View {
+    Button {
+      guard let ip = iface.ipv4 else { return }
+      copyToClipboard(ip)
+      copied.flash()
+    } label: {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(statusColor)
+          .frame(width: 7, height: 7)
+        Text(iface.name)
+          .font(.system(size: 12, weight: .medium, design: .monospaced))
+          .frame(width: 80, alignment: .leading)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(copied.value ? "copied" : (iface.ipv4 ?? "-"))
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(copied.value ? .green : (iface.ipv4 != nil ? .primary : .secondary))
+          if let mac = iface.mac {
+            Text(mac)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(.secondary)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(statusLabel)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(statusColor)
+      }
+      .frame(height: networkRowHeight)
+      .padding(.horizontal, 8)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(iface.ipv4 == nil)
+    .help(iface.ipv4 != nil ? "Click to copy" : "")
     .onHover { hover.value = $0 }
   }
 }

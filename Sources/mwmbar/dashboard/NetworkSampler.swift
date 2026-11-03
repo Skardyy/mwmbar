@@ -11,6 +11,16 @@ struct NetworkSummary: Sendable {
   var vpnActive: Bool
 }
 
+struct InterfaceInfo: Identifiable, Sendable, Equatable {
+  let name: String
+  let isUp: Bool
+  let isRunning: Bool
+  let isLoopback: Bool
+  let ipv4: String?
+  let mac: String?
+  var id: String { name }
+}
+
 final class NetworkSampler: @unchecked Sendable {
   private let publicUrl = URL(string: "https://api.ipify.org")!
   private let pathMonitor = NWPathMonitor()
@@ -28,6 +38,72 @@ final class NetworkSampler: @unchecked Sendable {
 
   deinit {
     pathMonitor.cancel()
+  }
+
+  // every interface getifaddrs reports, up or down, with its ipv4 and mac
+  // when available. one pass merges the AF_INET and AF_LINK records that
+  // getifaddrs reports as separate entries per interface name.
+  func allInterfaces() -> [InterfaceInfo] {
+    var head: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&head) == 0, let first = head else { return [] }
+    defer { freeifaddrs(head) }
+
+    struct Builder {
+      var isUp = false
+      var isRunning = false
+      var isLoopback = false
+      var ipv4: String?
+      var mac: String?
+    }
+    var order: [String] = []
+    var byName: [String: Builder] = [:]
+
+    var cur: UnsafeMutablePointer<ifaddrs>? = first
+    while let ptr = cur {
+      defer { cur = ptr.pointee.ifa_next }
+      let ifa = ptr.pointee
+      let name = String(cString: ifa.ifa_name)
+      if byName[name] == nil {
+        byName[name] = Builder()
+        order.append(name)
+      }
+      byName[name]!.isUp = (ifa.ifa_flags & UInt32(IFF_UP)) != 0
+      byName[name]!.isRunning = (ifa.ifa_flags & UInt32(IFF_RUNNING)) != 0
+      byName[name]!.isLoopback = (ifa.ifa_flags & UInt32(IFF_LOOPBACK)) != 0
+
+      guard let addr = ifa.ifa_addr else { continue }
+      if addr.pointee.sa_family == UInt8(AF_INET) {
+        var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        if getnameinfo(
+          addr, socklen_t(addr.pointee.sa_len), &buf, socklen_t(buf.count),
+          nil, 0, NI_NUMERICHOST) == 0
+        {
+          byName[name]!.ipv4 = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        }
+      } else if addr.pointee.sa_family == UInt8(AF_LINK) {
+        // sockaddr_dl header is 8 bytes (len, family, index, type, nlen,
+        // alen, slen) before the variable length name + address data; read
+        // raw bytes off the original buffer rather than the Swift bridged
+        // struct, whose sdl_data tuple is fixed at 12 bytes and can truncate
+        // a long interface name before the mac bytes it precedes.
+        let raw = UnsafeRawPointer(addr)
+        let nlen = Int(raw.load(fromByteOffset: 5, as: UInt8.self))
+        let alen = Int(raw.load(fromByteOffset: 6, as: UInt8.self))
+        if alen == 6 {
+          let macBytes = raw.advanced(by: 8 + nlen).assumingMemoryBound(to: UInt8.self)
+          byName[name]!.mac = (0..<6)
+            .map { String(format: "%02x", macBytes[$0]) }
+            .joined(separator: ":")
+        }
+      }
+    }
+
+    return order.compactMap { name in
+      guard let b = byName[name] else { return nil }
+      return InterfaceInfo(
+        name: name, isUp: b.isUp, isRunning: b.isRunning, isLoopback: b.isLoopback,
+        ipv4: b.ipv4, mac: b.mac)
+    }
   }
 
   func summary() -> NetworkSummary {

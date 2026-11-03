@@ -25,6 +25,7 @@ final class DashboardModel {
   var networkSearch = ""
   var networkSortColumn: NetworkSortColumn = .ip
   var networkSortAsc = true
+  var networkSubTab: NetworkSubTab = .mdns
 
   func toggleNetworkSort(_ col: NetworkSortColumn) {
     if networkSortColumn == col {
