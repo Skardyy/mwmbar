@@ -498,6 +498,11 @@ private struct PortRow: View {
   @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
 
+  private var secondLine: String {
+    guard let folder = port.folder, folder != "/" else { return "pid \(port.pid)" }
+    return "pid \(port.pid)  -  \(folder)"
+  }
+
   var body: some View {
     Button {
       copyToClipboard(String(port.port))
@@ -516,11 +521,18 @@ private struct PortRow: View {
           Text(port.command)
             .font(.system(size: 12))
             .lineLimit(1).truncationMode(.tail)
-          Text("pid \(port.pid)")
+          Text(secondLine)
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.tail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        if let age = port.age {
+          Text(age)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .frame(width: 60, alignment: .trailing)
+        }
       }
       .frame(height: networkRowHeight)
       .padding(.horizontal, 8)

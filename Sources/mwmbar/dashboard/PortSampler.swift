@@ -10,6 +10,8 @@ struct PortInfo: Identifiable, Sendable, Equatable {
   let port: Int
   let pid: pid_t
   var command: String
+  var folder: String?
+  var age: String?
   var id: String { "\(proto.rawValue):\(port):\(pid)" }
 }
 
@@ -25,15 +27,19 @@ enum PortSampler {
   // outbound tcp connections do not drown out the ports actually bound.
   static func sample() -> [PortInfo] {
     guard let output = run() else { return [] }
-    let commandByPid = resolveCommands(pids: pids(in: output))
+    let wanted = pids(in: output)
+    let processes = resolveProcesses(pids: wanted)
+    let cwds = resolveCwds(pids: wanted)
     var seen = Set<String>()
     var out: [PortInfo] = []
     for line in output.split(separator: "\n").dropFirst() {
       guard var info = parse(line) else { continue }
-      if let full = commandByPid[info.pid] {
-        if systemPrefixes.contains(where: { full.hasPrefix($0) }) { continue }
-        info.command = (full as NSString).lastPathComponent
+      if let proc = processes[info.pid] {
+        if systemPrefixes.contains(where: { proc.command.hasPrefix($0) }) { continue }
+        info.command = (proc.command as NSString).lastPathComponent
+        info.age = proc.age
       }
+      info.folder = cwds[info.pid].map { ($0 as NSString).lastPathComponent }
       guard seen.insert(info.id).inserted else { continue }
       out.append(info)
     }
@@ -49,33 +55,62 @@ enum PortSampler {
     return out
   }
 
+  private struct ProcessMeta {
+    let command: String
+    let age: String?
+  }
+
   // lsof's own COMMAND column truncates to ~9 chars and shows the kernel
   // process name, not the real executable (e.g. a node-hosted daemon like
   // prettierd shows up as plain "node"); ps -o comm= gives the full path.
-  private static func resolveCommands(pids: Set<pid_t>) -> [pid_t: String] {
+  // etime (elapsed since start) is pulled in the same call since ps already
+  // has to walk every process either way.
+  private static func resolveProcesses(pids: Set<pid_t>) -> [pid_t: ProcessMeta] {
     guard !pids.isEmpty else { return [:] }
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-    proc.arguments = ["-axo", "pid=,comm="]
-    let outPipe = Pipe()
-    proc.standardOutput = outPipe
-    proc.standardError = FileHandle.nullDevice
-    do {
-      try proc.run()
-    } catch {
-      Log.network.warning("ps launch failed: \(error)")
+    guard let text = run(URL(fileURLWithPath: "/bin/ps"), ["-axo", "pid=,etime=,comm="]) else {
       return [:]
     }
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-    proc.waitUntilExit()
-    guard let text = String(data: data, encoding: .utf8) else { return [:] }
-    var out: [pid_t: String] = [:]
+    var out: [pid_t: ProcessMeta] = [:]
     for line in text.split(separator: "\n") {
-      let trimmed = line.trimmingCharacters(in: .whitespaces)
-      guard let spaceIdx = trimmed.firstIndex(of: " ") else { continue }
-      guard let pid = pid_t(trimmed[..<spaceIdx]), pids.contains(pid) else { continue }
-      out[pid] = String(trimmed[trimmed.index(after: spaceIdx)...]).trimmingCharacters(
-        in: .whitespaces)
+      let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+      guard fields.count >= 3, let pid = pid_t(fields[0]), pids.contains(pid) else { continue }
+      let command = fields[2...].joined(separator: " ")
+      out[pid] = ProcessMeta(command: command, age: formatAge(String(fields[1])))
+    }
+    return out
+  }
+
+  // ps etime is "[[DD-]HH:]MM:SS"; shown as the coarsest unit so "started
+  // 2d ago" reads at a glance instead of a full duration stopwatch.
+  private static func formatAge(_ etime: String) -> String? {
+    var days = 0
+    var rest = etime
+    if let dashIdx = etime.firstIndex(of: "-") {
+      days = Int(etime[..<dashIdx]) ?? 0
+      rest = String(etime[etime.index(after: dashIdx)...])
+    }
+    let parts = rest.split(separator: ":").compactMap { Int($0) }
+    guard !parts.isEmpty else { return nil }
+    let hours = days > 0 || parts.count == 3 ? parts[parts.count - 3] : 0
+    let minutes = parts.count >= 2 ? parts[parts.count - 2] : 0
+    if days > 0 { return "\(days)d ago" }
+    if hours > 0 { return "\(hours)h ago" }
+    if minutes > 0 { return "\(minutes)m ago" }
+    return "just now"
+  }
+
+  // one batched "which pid has which cwd" lookup instead of forking lsof
+  // once per pid; NAME is joined back together since a path can contain
+  // spaces, which a plain whitespace split would otherwise cut apart.
+  private static func resolveCwds(pids: Set<pid_t>) -> [pid_t: String] {
+    guard !pids.isEmpty else { return [:] }
+    guard let text = run(URL(fileURLWithPath: "/usr/sbin/lsof"), ["-a", "-d", "cwd", "-n", "-P"])
+    else { return [:] }
+    var out: [pid_t: String] = [:]
+    for line in text.split(separator: "\n").dropFirst() {
+      let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+      guard fields.count >= 9, let pid = pid_t(fields[1]), pids.contains(pid) else { continue }
+      out[pid] = fields[8...].joined(separator: " ")
     }
     return out
   }
@@ -107,9 +142,13 @@ enum PortSampler {
   }
 
   private static func run() -> String? {
+    run(URL(fileURLWithPath: "/usr/sbin/lsof"), ["-i", "-P", "-n"])
+  }
+
+  private static func run(_ executable: URL, _ arguments: [String]) -> String? {
     let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-    proc.arguments = ["-i", "-P", "-n"]
+    proc.executableURL = executable
+    proc.arguments = arguments
     let outPipe = Pipe()
     proc.standardOutput = outPipe
     proc.standardError = FileHandle.nullDevice
@@ -117,8 +156,8 @@ enum PortSampler {
       try proc.run()
     } catch {
       // periodic sampler on a refresh timer: trace and continue rather
-      // than crash the daemon over a transient lsof launch failure.
-      Log.network.warning("lsof launch failed: \(error)")
+      // than crash the daemon over a transient subprocess launch failure.
+      Log.network.warning("\(executable.lastPathComponent) launch failed: \(error)")
       return nil
     }
     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
