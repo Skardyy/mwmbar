@@ -10,6 +10,10 @@ class Mwmbar < Formula
   def install
     system "swift", "build", "-c", "release", "--disable-sandbox"
     bin.install ".build/release/mwmbar"
+    # Bundle.module (used to load the bundled oui vendor lookup table)
+    # fatal-errors at runtime if this resource bundle is not sitting next
+    # to the executable, so it has to be installed alongside it too.
+    bin.install ".build/release/mwmbar_mwmbar.bundle"
     system "/usr/bin/codesign", "--force", "-s", "-",
            "--identifier", "com.skardyy.mwmbar",
            bin/"mwmbar"
