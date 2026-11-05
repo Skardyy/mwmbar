@@ -16,6 +16,9 @@ let package = Package(
         .product(name: "Atomics", package: "swift-atomics")
       ],
       path: "Sources/mwmbar",
+      resources: [
+        .copy("Resources/oui.txt")
+      ],
       linkerSettings: [
         // embed Info.plist directly in the Mach-O so TCC treats this
         // bundle less binary as an app for Accessibility and Screen

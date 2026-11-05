@@ -2,11 +2,18 @@ import Atomics
 import Foundation
 import Observation
 
+enum LanDeviceSource: Sendable {
+  case mdns
+  case arp
+}
+
 struct LanDevice: Identifiable, Hashable, Sendable {
   let ip: String
   let hostname: String?
+  let mac: String?
   let services: [String]
   let interfaceName: String?
+  let source: LanDeviceSource
   var id: String { ip }
 }
 
@@ -96,6 +103,7 @@ final class NetworkRefresher: @unchecked Sendable {
     self.sampler = sampler
     self.summaryInterval = summaryInterval
     self.fastInterval = fastInterval
+    self.coordinator = ScanCoordinator(store: store)
   }
 
   private var summaryTimer: DispatchSourceTimer?
@@ -124,25 +132,36 @@ final class NetworkRefresher: @unchecked Sendable {
   }
 
   private var mdnsListener: MdnsListener?
-  private var coordinator: ScanCoordinator?
+  private var arpTimer: DispatchSourceTimer?
+  // lives for the whole app run, not per scan session, so devices already
+  // found stay visible the instant the network tab is reopened instead of
+  // the list being wiped and rebuilt from nothing every time.
+  private let coordinator: ScanCoordinator
 
   func startScan() {
     stopScan()
-    store.patch { snap in
-      snap.scanning = true
-      snap.lan = []
-    }
-    let coord = ScanCoordinator(store: store)
+    store.patch { snap in snap.scanning = true }
     let mdns = MdnsListener()
-    mdns.start(onRecord: { rec in coord.onMdns(rec) })
+    mdns.start(onRecord: { [coordinator] rec in coordinator.onMdns(rec) })
     mdnsListener = mdns
-    coordinator = coord
+
+    // the arp cache is a passive, already-resolved table the os maintains
+    // on its own; this never sends a single packet, it just polls whatever
+    // is already there.
+    let t = DispatchSource.makeTimerSource(queue: queue)
+    t.schedule(deadline: .now(), repeating: 5.0)
+    t.setEventHandler { [coordinator] in
+      for entry in ArpCacheReader.read() { coordinator.onArp(entry) }
+    }
+    t.resume()
+    arpTimer = t
   }
 
   func stopScan() {
     mdnsListener?.stop()
     mdnsListener = nil
-    coordinator = nil
+    arpTimer?.cancel()
+    arpTimer = nil
     store.patch { snap in
       snap.scanning = false
       snap.lastScanned = Date()
@@ -198,8 +217,35 @@ private final class ScanCoordinator: @unchecked Sendable {
       byIp[rec.ip] = LanDevice(
         ip: rec.ip,
         hostname: host,
+        mac: existing?.mac,
         services: services.sorted(),
-        interfaceName: existing?.interfaceName ?? rec.interfaceName)
+        interfaceName: existing?.interfaceName ?? rec.interfaceName,
+        source: .mdns)
+      publish()
+    }
+  }
+
+  // the arp cache only ever adds ips mdns never announced, or backfills the
+  // mac on an mdns entry that lacks one; it never overwrites an mdns
+  // hostname, since that is always the better, real name when available.
+  func onArp(_ entry: ArpEntry) {
+    serial.async { [self] in
+      if let existing = byIp[entry.ip] {
+        guard existing.mac == nil else { return }
+        byIp[entry.ip] = LanDevice(
+          ip: existing.ip, hostname: existing.hostname, mac: entry.mac,
+          services: existing.services, interfaceName: existing.interfaceName,
+          source: existing.source)
+        publish()
+        return
+      }
+      // an unresolved mac (vendor not in the ieee registry, e.g. a
+      // randomized phone/laptop address) has nothing worth showing - an
+      // ip with no name and no interface is just noise.
+      guard let vendor = OuiLookup.vendor(for: entry.mac) else { return }
+      byIp[entry.ip] = LanDevice(
+        ip: entry.ip, hostname: vendor, mac: entry.mac, services: [],
+        interfaceName: entry.interfaceName, source: .arp)
       publish()
     }
   }

@@ -4,7 +4,7 @@ import SwiftUI
 
 // kept as classic ObservableObject (not @Observable) so @StateObject works
 // under the CommandLineTools SDK, which ships without the SwiftUIMacros
-// plugin that @Observable / @State would need. See WindowIcon.swift.
+// plugin that @Observable / @State would need.
 @MainActor
 private final class HoverFlag: ObservableObject {
   @Published var value = false
@@ -274,7 +274,6 @@ private struct InfoTile: View {
   let label: String
   let value: String
   var valueTint: Color = .primary
-  var trailing: AnyView? = nil
   var copyable: String? = nil
   @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
@@ -290,7 +289,6 @@ private struct InfoTile: View {
           .foregroundStyle(.secondary)
           .tracking(0.4)
         Spacer(minLength: 0)
-        if let trailing = trailing { trailing }
       }
       HStack(spacing: 4) {
         Text(copied.value ? "copied" : value)
@@ -363,6 +361,20 @@ private struct LanRow: View {
   @StateObject private var hover = HoverFlag()
   @StateObject private var copied = CopiedFlag()
 
+  // mdns names are the device's own real hostname; arp entries only ever
+  // have a mac vendor guess, so the label makes that distinction explicit
+  // rather than let an oui guess read as confidently as a real hostname.
+  private var sourceBadge: some View {
+    let label = device.source == .mdns ? "mDNS" : "OUI"
+    let tint: Color = device.source == .mdns ? .orange : .secondary
+    return Text(label)
+      .font(.system(size: 8, weight: .bold))
+      .foregroundStyle(tint)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 2)
+      .background(Capsule().fill(tint.opacity(0.15)))
+  }
+
   var body: some View {
     Button {
       copyToClipboard(device.ip)
@@ -396,6 +408,7 @@ private struct LanRow: View {
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        sourceBadge
       }
       .frame(height: networkRowHeight)
       .padding(.horizontal, 8)
