@@ -5,6 +5,7 @@ struct SettingsTab: View {
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
   @ObservedObject var wmPref: WMPreference
+  @ObservedObject var updater: UpdateController
   let onResampleWallpaper: () -> Void
   let onSwitchWm: (WMKind) -> Void
 
@@ -39,6 +40,7 @@ struct SettingsTab: View {
             actionLabel: "Run",
             activeFill: Color(red: 0.72, green: 0.44, blue: 0.98),
             onRun: onResampleWallpaper)
+          UpdateCard(updater: updater)
         }
       }
       .padding(.horizontal, 4)
@@ -172,6 +174,99 @@ private struct ActionCard: View {
       .animation(.easeOut(duration: 0.18), value: flashed.value)
     }
     .buttonStyle(.plain)
+    .onHover { hover.value = $0 }
+  }
+}
+
+private struct UpdateCard: View {
+  @ObservedObject var updater: UpdateController
+  @StateObject private var hover = CardHover()
+  private let activeFill = Color(red: 0.35, green: 0.78, blue: 0.55)
+
+  private var actionLabel: String {
+    switch updater.status {
+    case .idle: return "Check"
+    case .checking: return "..."
+    case .upToDate: return "Up to date"
+    case .available(_, let latest): return "Update to \(latest)"
+    case .installing: return "Installing..."
+    case .installed: return "Restart to apply"
+    case .failed: return "Retry"
+    }
+  }
+
+  private var description: String {
+    switch updater.status {
+    case .failed(let reason): return reason
+    case .available(let current, let latest):
+      return "running \(current), \(latest) is available - click again to install"
+    case .installed: return "installed - relaunch mwmbar yourself to run the new build"
+    default: return "check brew for a newer mwmbar before installing anything"
+    }
+  }
+
+  private var tint: Color {
+    switch updater.status {
+    case .failed: return .red
+    case .upToDate, .installed: return .green
+    case .available: return .orange
+    default: return activeFill
+    }
+  }
+
+  var body: some View {
+    Button {
+      if case .available = updater.status {
+        updater.install()
+      } else {
+        updater.check()
+      }
+    } label: {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 8) {
+          Image(systemName: "arrow.triangle.2.circlepath")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(activeFill)
+            .frame(width: 28, height: 28)
+            .background(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(activeFill.opacity(0.18))
+            )
+          Text("Update")
+            .font(.system(size: 13, weight: .semibold))
+          Spacer(minLength: 0)
+          Text(actionLabel)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(tint.opacity(0.18)))
+        }
+        Text(description)
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .multilineTextAlignment(.leading)
+        Spacer(minLength: 0)
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(.ultraThinMaterial)
+      )
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(hover.value ? Color.primary.opacity(0.06) : .clear)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+      )
+      .animation(.easeOut(duration: 0.12), value: hover.value)
+    }
+    .buttonStyle(.plain)
+    .disabled(updater.status == .checking || updater.status == .installing)
     .onHover { hover.value = $0 }
   }
 }

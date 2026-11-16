@@ -14,6 +14,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let model = DashboardModel()
   private let store = SystemStore()
   private let caffeine = CaffeineController()
+  private let updater = UpdateController()
   private let peekPref: PeekPreference
   private let sampler = ProcessSampler()
   private let serviceSampler = ServiceSampler()
@@ -79,7 +80,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     popover.delegate = self
     let host = NSHostingController(
       rootView: Dashboard(
-        model: model, caffeine: caffeine, peekPref: peekPref, wmPref: wmPref,
+        model: model, caffeine: caffeine, peekPref: peekPref, wmPref: wmPref, updater: updater,
         store: store,
         serviceStore: serviceStore,
         networkStore: networkStore,

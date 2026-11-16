@@ -77,6 +77,7 @@ struct Dashboard: View {
   @ObservedObject var caffeine: CaffeineController
   @ObservedObject var peekPref: PeekPreference
   @ObservedObject var wmPref: WMPreference
+  @ObservedObject var updater: UpdateController
   let store: SystemStore
   let serviceStore: ServiceStore
   let networkStore: NetworkStore
@@ -99,7 +100,7 @@ struct Dashboard: View {
           NetworkTab(model: model, store: networkStore, onKill: onKill)
         case .settings:
           SettingsTab(
-            caffeine: caffeine, peekPref: peekPref, wmPref: wmPref,
+            caffeine: caffeine, peekPref: peekPref, wmPref: wmPref, updater: updater,
             onResampleWallpaper: onResampleWallpaper,
             onSwitchWm: onSwitchWm)
         }
