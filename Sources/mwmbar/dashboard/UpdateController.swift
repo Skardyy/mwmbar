@@ -100,8 +100,11 @@ final class UpdateController: ObservableObject {
 
   nonisolated private static func run(_ arguments: [String]) -> RunResult? {
     let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/brew")
-    proc.arguments = arguments
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    proc.arguments = ["brew"] + arguments
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = SystemPath.resolved
+    proc.environment = env
     let outPipe = Pipe()
     let errPipe = Pipe()
     proc.standardOutput = outPipe

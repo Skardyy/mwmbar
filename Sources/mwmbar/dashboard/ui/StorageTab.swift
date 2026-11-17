@@ -111,7 +111,7 @@ enum StorageTagColor {
     "docker-volume": .gray,
     "docker-cache": .teal,
     "node": .green,
-    "downloads": Color(red: 0.75, green: 0.25, blue: 0.2),
+    "downloads": Color(red: 0.3, green: 0.65, blue: 0.4),
   ]
   private static let fallback: [Color] = [.teal, .indigo, .pink, .brown, .mint, .orange]
 

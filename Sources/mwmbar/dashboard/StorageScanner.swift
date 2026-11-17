@@ -57,6 +57,7 @@ enum StorageScanner {
   static func scan() -> AsyncStream<StorageItem> {
     AsyncStream { continuation in
       let task = Task {
+        primeProtectedFolderAccess()
         await withTaskGroup(of: Void.self) { group in
           group.addTask { await scanGlobals(continuation) }
           group.addTask { await scanProjects(continuation) }
@@ -65,6 +66,18 @@ enum StorageScanner {
         continuation.finish()
       }
       continuation.onTermination = { _ in task.cancel() }
+    }
+  }
+
+  // mdfind's own Spotlight query into a TCC protected folder returns
+  // results silently filtered to whatever is already authorized - it
+  // never itself surfaces the consent prompt. a direct top level listing
+  // does surface that prompt, and once granted, mdfind's results for
+  // that folder become complete for the rest of the process's lifetime.
+  private static func primeProtectedFolderAccess() {
+    for folder in ["Desktop", "Documents"] {
+      _ = try? FileManager.default.contentsOfDirectory(
+        atPath: NSHomeDirectory() + "/\(folder)")
     }
   }
 
@@ -202,30 +215,47 @@ enum StorageScanner {
     guard
       let out = run(
         "/usr/bin/mdfind", ["-onlyin", NSHomeDirectory(), "kMDItemFSName == '\(name)'"])
-    else { return [] }
+    else {
+      Log.network.debug("mdfindDirs \(name): run() returned nil")
+      return []
+    }
+    let rawLines = out.split(separator: "\n").map(String.init)
+    Log.network.debug("mdfindDirs \(name): raw count=\(rawLines.count) first3=\(rawLines.prefix(3))")
     var isDir: ObjCBool = false
-    return out.split(separator: "\n").map(String.init).filter { path in
+    let result = rawLines.filter { path in
       // anything under ~/Library is an app's own internals - a bundled
       // tool's node_modules, the pnpm store's own symlink farm, etc.
       // Downloads is reported as a single folder total, not per project.
       if path.contains("/Library/") || path.contains("/Downloads/") { return false }
-      guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue
-      else { return false }
+      let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+      if !exists {
+        Log.network.debug("mdfindDirs \(name): fileExists false for \(path)")
+      }
+      guard exists, isDir.boolValue else { return false }
       let parent = (path as NSString).deletingLastPathComponent
       return !nestedJunkMarkers.contains { parent.contains($0) }
     }
+    Log.network.debug("mdfindDirs \(name): filtered count=\(result.count)")
+    return result
   }
 
   private static func directorySize(_ path: String) -> Int64? {
-    guard FileManager.default.fileExists(atPath: path) else { return nil }
-    guard let out = run("/usr/bin/du", ["-sk", path]) else { return nil }
+    guard FileManager.default.fileExists(atPath: path) else {
+      Log.network.debug("directorySize: fileExists false for \(path)")
+      return nil
+    }
+    guard let out = run("/usr/bin/du", ["-sk", path]) else {
+      Log.network.debug("directorySize: du run() returned nil for \(path)")
+      return nil
+    }
     let field = out.split(separator: "\t").first ?? out.split(separator: " ").first ?? ""
-    guard let kb = Int64(field.trimmingCharacters(in: .whitespaces)) else { return nil }
+    guard let kb = Int64(field.trimmingCharacters(in: .whitespaces)) else {
+      Log.network.debug("directorySize: unparsable du output '\(out)' for \(path)")
+      return nil
+    }
     return kb * 1024
   }
 
-  // "docker" is resolved through env so this works whether it lives under
-  // /opt/homebrew/bin, /usr/local/bin, or wherever the active tap put it.
   private static func run(_ command: String, _ arguments: [String]) -> String? {
     let proc = Process()
     if command.hasPrefix("/") {
@@ -234,6 +264,9 @@ enum StorageScanner {
     } else {
       proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
       proc.arguments = [command] + arguments
+      var env = ProcessInfo.processInfo.environment
+      env["PATH"] = SystemPath.resolved
+      proc.environment = env
     }
     let outPipe = Pipe()
     proc.standardOutput = outPipe
