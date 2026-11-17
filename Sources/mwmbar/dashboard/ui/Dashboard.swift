@@ -6,6 +6,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
   case system = "System"
   case services = "Services"
   case network = "Network"
+  case storage = "Storage"
   case settings = "Settings"
   var id: String { rawValue }
 }
@@ -78,6 +79,7 @@ struct Dashboard: View {
   @ObservedObject var peekPref: PeekPreference
   @ObservedObject var wmPref: WMPreference
   @ObservedObject var updater: UpdateController
+  @ObservedObject var storage: StorageController
   let store: SystemStore
   let serviceStore: ServiceStore
   let networkStore: NetworkStore
@@ -98,6 +100,8 @@ struct Dashboard: View {
           ServicesTab(model: model, store: serviceStore, onAction: onServiceAction)
         case .network:
           NetworkTab(model: model, store: networkStore, onKill: onKill)
+        case .storage:
+          StorageTab(storage: storage)
         case .settings:
           SettingsTab(
             caffeine: caffeine, peekPref: peekPref, wmPref: wmPref, updater: updater,

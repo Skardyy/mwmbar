@@ -15,6 +15,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
   private let store = SystemStore()
   private let caffeine = CaffeineController()
   private let updater = UpdateController()
+  private let storage = StorageController()
   private let peekPref: PeekPreference
   private let sampler = ProcessSampler()
   private let serviceSampler = ServiceSampler()
@@ -81,6 +82,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     let host = NSHostingController(
       rootView: Dashboard(
         model: model, caffeine: caffeine, peekPref: peekPref, wmPref: wmPref, updater: updater,
+        storage: storage,
         store: store,
         serviceStore: serviceStore,
         networkStore: networkStore,
@@ -158,7 +160,7 @@ final class CpuStatItem: NSObject, NSPopoverDelegate {
     case .network:
       networkRefresher.start()
       networkRefresher.startScan()
-    case .settings:
+    case .storage, .settings:
       break
     }
   }
@@ -341,7 +343,10 @@ enum HostMemoryInfo {
         host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
       }
     }
-    guard r == KERN_SUCCESS else { return 0 }
+    guard r == KERN_SUCCESS else {
+      Log.bar.warning("host_statistics64 failed: \(r)")
+      return 0
+    }
     let active = UInt64(stats.active_count) * pageSize
     let wired = UInt64(stats.wire_count) * pageSize
     let compressed = UInt64(stats.compressor_page_count) * pageSize
@@ -354,7 +359,10 @@ enum DiskInfo {
   // Finder treats as "available" (excludes reserved + apfs purgeable).
   static func rootUsage() -> (used: UInt64, total: UInt64) {
     var buf = statfs()
-    guard statfs("/", &buf) == 0 else { return (0, 1) }
+    guard statfs("/", &buf) == 0 else {
+      Log.bar.warning("statfs(\"/\") failed: \(errno)")
+      return (0, 1)
+    }
     let blockSize = UInt64(buf.f_bsize)
     let total = UInt64(buf.f_blocks) * blockSize
     let free = UInt64(buf.f_bavail) * blockSize
