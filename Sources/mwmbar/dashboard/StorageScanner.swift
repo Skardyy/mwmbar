@@ -34,6 +34,7 @@ enum StorageScanner {
     GlobalSpec(label: "rattler cache", path: "~/Library/Caches/rattler", tag: "rattler"),
     GlobalSpec(label: "playwright browsers", path: "~/Library/Caches/ms-playwright", tag: "playwright"),
     GlobalSpec(label: "terragrunt cache", path: "~/Library/Caches/terragrunt", tag: "terragrunt"),
+    GlobalSpec(label: "Downloads", path: "~/Downloads", tag: "downloads"),
   ]
 
   // directory names mdfind looks up through the Spotlight index, tagged
@@ -204,11 +205,12 @@ enum StorageScanner {
     else { return [] }
     var isDir: ObjCBool = false
     return out.split(separator: "\n").map(String.init).filter { path in
-      guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue
-      else { return false }
       // anything under ~/Library is an app's own internals - a bundled
       // tool's node_modules, the pnpm store's own symlink farm, etc.
-      if path.contains("/Library/") { return false }
+      // Downloads is reported as a single folder total, not per project.
+      if path.contains("/Library/") || path.contains("/Downloads/") { return false }
+      guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue
+      else { return false }
       let parent = (path as NSString).deletingLastPathComponent
       return !nestedJunkMarkers.contains { parent.contains($0) }
     }

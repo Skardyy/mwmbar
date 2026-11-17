@@ -24,5 +24,11 @@
   <true/>
   <key>NSScreenCaptureUsageDescription</key>
   <string>Sample the desktop wallpaper so the active workspace pill matches its accent color, and capture peek previews of inactive workspace windows.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Scan project folders on the Desktop for reclaimable build caches (node_modules, target, venv) in the Storage tab.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Scan project folders in Documents for reclaimable build caches (node_modules, target, venv) in the Storage tab.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Show the total size of the Downloads folder in the Storage tab.</string>
 </dict>
 </plist>
